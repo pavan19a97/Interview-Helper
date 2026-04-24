@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+pywebview
+pyaudiowpatch
+websockets
+groq
+anthropic
+python-dotenv

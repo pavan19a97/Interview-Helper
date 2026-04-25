@@ -4,6 +4,7 @@ import ctypes.wintypes
 import json
 import logging
 import threading
+import sys
 
 import uvicorn
 import webview
@@ -11,7 +12,14 @@ import socket
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-# Suppress pywebview's accessibility-tree recursion spam
+# Configure logging to show startup issues
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+
+# Suppress pywebview's excessive logging but keep warnings
 logging.getLogger('pywebview').setLevel(logging.CRITICAL)
 
 import core.audio_engine as audio_engine
@@ -25,6 +33,8 @@ current_muted: bool = False
 # Uvicorn's event loop — captured at startup so broadcast() can schedule
 # sends on the correct loop from any thread.
 _server_loop: asyncio.AbstractEventLoop = None
+
+print("[main] Starting Interview Helper...", flush=True)
 
 
 @app.on_event("startup")
@@ -42,6 +52,7 @@ def serve_ui():
 @app.websocket("/ws/ui")
 async def ws_ui(websocket: WebSocket):
     global current_engine, current_muted
+    print("[main] Client connected", flush=True)
     await websocket.accept()
     connected_clients.add(websocket)
     try:
@@ -53,12 +64,13 @@ async def ws_ui(websocket: WebSocket):
                 continue
             if msg.get("type") == "set_engine" and msg.get("value") in ("groq", "claude"):
                 current_engine = msg["value"]
-                print(f"[main] engine switched to: {current_engine}")
+                print(f"[main] Engine switched to: {current_engine}", flush=True)
             elif msg.get("type") == "set_muted" and isinstance(msg.get("value"), bool):
                 current_muted = msg["value"]
-                print(f"[main] muted: {current_muted}")
+                print(f"[main] Muted: {current_muted}", flush=True)
                 await _broadcast_impl(json.dumps({"type": "mute_state", "muted": current_muted}))
     except WebSocketDisconnect:
+        print("[main] Client disconnected", flush=True)
         pass
     finally:
         connected_clients.discard(websocket)
@@ -78,10 +90,14 @@ async def _broadcast_impl(payload: str) -> None:
 def broadcast(message: dict) -> None:
     """Thread-safe broadcast: schedules the send on uvicorn's event loop."""
     if _server_loop is None:
+        print("[main] ⚠ broadcast called but _server_loop is None!", flush=True)
         return
-    asyncio.run_coroutine_threadsafe(
-        _broadcast_impl(json.dumps(message)), _server_loop
-    )
+    try:
+        asyncio.run_coroutine_threadsafe(
+            _broadcast_impl(json.dumps(message)), _server_loop
+        )
+    except Exception as e:
+        print(f"[main] ⚠ broadcast error: {e}", flush=True)
 
 
 # ── Everything below only runs when launched directly (not on import) ─────────
@@ -92,14 +108,19 @@ if __name__ == "__main__":
             s.bind(('127.0.0.1', 0))
             return s.getsockname()[1]
 
+    print("[main] Finding free port...", flush=True)
     app_port = find_free_port()
-    _config = uvicorn.Config(app, host="127.0.0.1", port=app_port, log_level="warning")
+    print(f"[main] Using port: {app_port}", flush=True)
+    
+    print("[main] Starting uvicorn server...", flush=True)
+    _config = uvicorn.Config(app, host="127.0.0.1", port=app_port, log_level="info")
     _server = uvicorn.Server(_config)
     threading.Thread(target=_server.run, daemon=True).start()
 
     # Give uvicorn a moment to bind to the port before loading the webview
     import time
-    time.sleep(0.2)
+    time.sleep(0.5)
+    print("[main] ✓ Server started", flush=True)
 
     class _WindowAPI:
         def __init__(self):
@@ -153,6 +174,7 @@ if __name__ == "__main__":
 
     _api = _WindowAPI()
 
+    print("[main] Creating webview window...", flush=True)
     window = webview.create_window(
         "Interview Copilot",
         f"http://127.0.0.1:{app_port}/",
@@ -166,6 +188,7 @@ if __name__ == "__main__":
         background_color="#111111",
     )
     _api.win = window
+    print("[main] ✓ Window created", flush=True)
 
     def apply_transparency(hwnd):
         import time
@@ -199,13 +222,15 @@ if __name__ == "__main__":
     window.events.closed += on_window_closed
 
     def _start_audio():
+        print("[main] Initializing audio thread...", flush=True)
         ctypes.windll.ole32.CoInitializeEx(None, 0x2)
         loop = asyncio.SelectorEventLoop()
         asyncio.set_event_loop(loop)
         try:
+            print("[main] Running audio engine...", flush=True)
             loop.run_until_complete(audio_engine.run())
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[main] Audio thread error: {e}", flush=True)
         finally:
             try:
                 loop.run_until_complete(asyncio.sleep(0.1))
@@ -213,7 +238,11 @@ if __name__ == "__main__":
                 pass
             loop.close()
             ctypes.windll.ole32.CoUninitialize()
+            print("[main] Audio thread ended", flush=True)
 
+    print("[main] Starting audio thread...", flush=True)
     threading.Thread(target=_start_audio, daemon=True).start()
 
+    print("[main] Starting webview...", flush=True)
     webview.start()
+    print("[main] Application closed", flush=True)

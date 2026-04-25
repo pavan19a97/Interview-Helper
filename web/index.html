@@ -278,7 +278,20 @@
       flex-shrink: 0;
       margin-top: 2px;
       letter-spacing: 0.05em;
+      font-weight: bold;
     }
+    .ql.interviewer { color: #ffaa00; }  /* Orange for interviewer */
+    .ql.ai { color: var(--accent); }     /* Green for AI */
+
+    .q-type {
+      font-size: 8px;
+      color: var(--label-color);
+      opacity: 0.6;
+      margin-left: 4px;
+    }
+    .q-type.follow-up { color: #64b5f6; }
+    .q-type.rephrased { color: #ba68c8; }
+    .q-type.clarify { color: #ff8a65; }
 
     #cur-q {
       color: var(--body-dim);
@@ -400,11 +413,11 @@
       <div id="current-wrap">
         <div class="sec-label">Current</div>
         <div class="qa-row">
-          <span class="ql">Q</span>
+          <span class="ql interviewer">Interviewer</span>
           <div id="cur-q"><span class="placeholder">Listening…</span></div>
         </div>
         <div class="qa-row">
-          <span class="ql">A</span>
+          <span class="ql ai">AI</span>
           <div id="cur-a"><span class="placeholder">Answer streams here…</span></div>
         </div>
       </div>
@@ -443,6 +456,7 @@
     let curQText = '';
     let curAText = '';
     let answerSpan = null;
+    let currentQType = 'new_topic';  // Track question type from backend
 
     // ── Opacity / transparency ─────────────────────────────
     // Clamps slider value (10–100) and applies both:
@@ -583,14 +597,25 @@
 
       const qRow = document.createElement('div');
       qRow.className = 'qa-row';
-      const qlQ = document.createElement('span'); qlQ.className = 'ql'; qlQ.textContent = 'Q';
+      const qlQ = document.createElement('span'); 
+      qlQ.className = 'ql interviewer'; 
+      qlQ.textContent = 'Interviewer';
       const qTxt = document.createElement('div');  qTxt.className = 'hist-q';
       qTxt.textContent = curQText || '(no transcript)';
       qRow.appendChild(qlQ); qRow.appendChild(qTxt);
 
+      // Add question type indicator if not new topic
+      if (currentQType && currentQType !== 'new_topic') {
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'q-type ' + currentQType.replace('_', '-');
+        const typeLabels = { 'follow_up': '↳ Follow-up', 'rephrased': '↻ Rephrased', 'clarification': '? Clarify' };
+        typeSpan.textContent = typeLabels[currentQType] || '';
+        if (typeSpan.textContent) qRow.appendChild(typeSpan);
+      }
+
       const aRow = document.createElement('div');
       aRow.className = 'qa-row';
-      const qlA = document.createElement('span'); qlA.className = 'ql'; qlA.textContent = 'A';
+      const qlA = document.createElement('span'); qlA.className = 'ql ai'; qlA.textContent = 'AI';
       const aTxt = document.createElement('div');  aTxt.className = 'hist-a';
       aTxt.textContent = curAText;
       aRow.appendChild(qlA); aRow.appendChild(aTxt);
@@ -600,7 +625,7 @@
       histDiv.insertBefore(pair, histDiv.firstChild);
       histHdr.classList.add('on');
 
-      curQText = ''; curAText = ''; answerSpan = null;
+      curQText = ''; curAText = ''; answerSpan = null; currentQType = 'new_topic';
       curQ.innerHTML = '<span class="placeholder">Listening…</span>';
       curA.innerHTML = '<span class="placeholder">Answer streams here…</span>';
     }
@@ -646,6 +671,10 @@
           }
           case 'answer_done':   { archiveAndReset(); break; }
           case 'mute_state':    { setMuteUI(msg.muted); break; }
+          case 'question_type': { 
+            currentQType = msg.question_type; 
+            break; 
+          }
         }
       };
     }

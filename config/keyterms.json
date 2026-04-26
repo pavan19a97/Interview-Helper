@@ -1,0 +1,31 @@
+{
+  "keyterms": [
+    "LangChain", "LangGraph", "LangSmith",
+    "MLflow", "PySpark", "Databricks",
+    "Pinecone", "FAISS", "FastAPI",
+    "Kubernetes", "TensorFlow", "PyTorch",
+    "Chroma", "Kafka", "PostgreSQL",
+    "MongoDB", "MLOps", "AKS",
+    "RAG", "Fiserv", "uvicorn",
+    "Anthropic", "LLM"
+  ],
+  "postprocess": {
+    "Lang Chain": "LangChain",
+    "Lang Graph": "LangGraph",
+    "Lang Smith": "LangSmith",
+    "M L flow": "MLflow",
+    "ML flow": "MLflow",
+    "Pie Spark": "PySpark",
+    "Data Bricks": "Databricks",
+    "Pine Cone": "Pinecone",
+    "F A I S S": "FAISS",
+    "Fast API": "FastAPI",
+    "F API": "FastAPI",
+    "Kube": "Kubernetes",
+    "fee serve": "Fiserv",
+    "fee server": "Fiserv",
+    "ML ops": "MLOps",
+    "A K S": "AKS",
+    "R A G": "RAG"
+  }
+}

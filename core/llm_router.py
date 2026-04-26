@@ -65,7 +65,21 @@ RESPONSE RULES:
 - For NLP / conversational AI questions → reference the 35K interaction virtual assistant at Wells Fargo
 - For governance / compliance → reference regulated FinTech experience and model controls at Zurich NA
 - IMPORTANT: Use the conversation context to provide relevant follow-up information when the interviewer asks follow-up or clarification questions
+- If CANDIDATE-PROVIDED CONTEXT is present below, prioritize it to give personalized, specific answers
 """
+
+
+def build_system_prompt() -> str:
+    """Build system prompt, prepending any enabled upload context."""
+    from core.uploads import build_context_block
+    block = build_context_block()
+    if block:
+        return (
+            SYSTEM_PROMPT.strip()
+            + "\n\nCANDIDATE-PROVIDED CONTEXT (use this to personalize and ground your answers):\n"
+            + block
+        )
+    return SYSTEM_PROMPT.strip()
 
 
 async def stream_answer(transcript: str, engine: str) -> None:
@@ -104,7 +118,7 @@ CURRENT QUESTION (Interviewer):
             stream = await client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT.strip()},
+                    {"role": "system", "content": build_system_prompt()},
                     {"role": "user", "content": user_content},
                 ],
                 stream=True,
@@ -133,7 +147,7 @@ CURRENT QUESTION (Interviewer):
             async with anthropic.AsyncAnthropic(api_key=_ANTHROPIC_API_KEY).messages.stream(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=512,
-                system=SYSTEM_PROMPT.strip(),
+                system=build_system_prompt(),
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
                 async for delta in stream.text_stream:

@@ -13,20 +13,7 @@ load_dotenv()
 _DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 _CHUNK = 2048
 
-# Domain-specific keyterms for Deepgram streaming recognition (keyterm=term, no weights)
-_DG_KEYWORDS = "&".join(
-    f"keyterm={term}"
-    for term in [
-        "LangChain", "LangGraph", "LangSmith",
-        "MLflow", "PySpark", "Databricks",
-        "Pinecone", "FAISS", "FastAPI",
-        "Kubernetes", "TensorFlow", "PyTorch",
-        "Chroma", "Kafka", "PostgreSQL",
-        "MongoDB", "MLOps", "AKS",
-        "RAG", "Fiserv", "uvicorn",
-        "Anthropic", "LLM",
-    ]
-)
+from core.transcript_postprocess import get_dg_keyterms_qs, postprocess_transcript
 
 print("[audio_engine] Initializing...", flush=True)
 
@@ -144,6 +131,7 @@ async def run() -> None:
             if msg_type == "UtteranceEnd":
                 full_text = " ".join(transcript_buffer).strip()
                 transcript_buffer.clear()
+                full_text = postprocess_transcript(full_text)
                 if not _main.current_muted and full_text:
                     print(f"[audio_engine] utterance: {full_text}", flush=True)
                     broadcast({"type": "transcript", "text": full_text})
@@ -179,10 +167,13 @@ async def run() -> None:
 
     def _build_attempts(sr, ch):
         uend = _main.current_utterance_end_ms
+        kw = get_dg_keyterms_qs()
         params = (
             f"model=nova-3&smart_format=true&interim_results=true"
+            f"&punctuate=true&numerals=true&filler_words=false&profanity_filter=false"
+            f"&endpointing=300"
             f"&encoding=linear16&sample_rate={sr}&channels={ch}&utterance_end_ms={uend}"
-            f"&{_DG_KEYWORDS}"
+            + (f"&{kw}" if kw else "")
         )
         url_tok = _base + "?" + params
         url_key = _base + f"?key={_DEEPGRAM_API_KEY}&" + params
@@ -291,10 +282,13 @@ async def run_mic() -> None:
 
     def _build_attempts(sr, ch):
         uend = _main.current_utterance_end_ms
+        kw = get_dg_keyterms_qs()
         params = (
             f"model=nova-3&smart_format=true&interim_results=true"
+            f"&punctuate=true&numerals=true&filler_words=false&profanity_filter=false"
+            f"&endpointing=300"
             f"&encoding=linear16&sample_rate={sr}&channels={ch}&utterance_end_ms={uend}"
-            f"&{_DG_KEYWORDS}"
+            + (f"&{kw}" if kw else "")
         )
         url_tok = _base + "?" + params
         url_key = _base + f"?key={_DEEPGRAM_API_KEY}&" + params
@@ -329,6 +323,7 @@ async def run_mic() -> None:
             if msg_type == "UtteranceEnd":
                 full_text = " ".join(transcript_buffer).strip()
                 transcript_buffer.clear()
+                full_text = postprocess_transcript(full_text)
                 if full_text:
                     print(f"[mic_engine] user said: {full_text}", flush=True)
                     ctx.add_user_speech(full_text)

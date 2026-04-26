@@ -9,8 +9,8 @@ import sys
 import uvicorn
 import webview
 import socket
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
 
 # Configure logging to show startup issues
 logging.basicConfig(
@@ -48,6 +48,44 @@ async def _capture_loop():
 def serve_ui():
     with open("web/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
+
+
+@app.post("/upload")
+async def upload_file(file: UploadFile = File(...)):
+    from core.uploads import add as uploads_add
+    data = await file.read()
+    if len(data) > 10 * 1024 * 1024:  # 10 MB limit
+        raise HTTPException(status_code=413, detail="File too large (10 MB max)")
+    entry = uploads_add(file.filename, data)
+    await _broadcast_impl(json.dumps({"type": "uploads_changed"}))
+    return JSONResponse(entry)
+
+
+@app.get("/uploads")
+def get_uploads():
+    from core.uploads import list_all
+    return JSONResponse(list_all())
+
+
+@app.delete("/uploads/{item_id}")
+async def delete_upload(item_id: str):
+    from core.uploads import delete
+    if not delete(item_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    await _broadcast_impl(json.dumps({"type": "uploads_changed"}))
+    return JSONResponse({"ok": True})
+
+
+@app.patch("/uploads/{item_id}")
+async def patch_upload(item_id: str, body: dict):
+    from core.uploads import set_enabled
+    enabled = body.get("enabled")
+    if enabled is None or not isinstance(enabled, bool):
+        raise HTTPException(status_code=400, detail="enabled (bool) required")
+    if not set_enabled(item_id, enabled):
+        raise HTTPException(status_code=404, detail="Not found")
+    await _broadcast_impl(json.dumps({"type": "uploads_changed"}))
+    return JSONResponse({"ok": True})
 
 
 @app.websocket("/ws/ui")

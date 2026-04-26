@@ -411,6 +411,89 @@
       background-repeat: no-repeat;
     }
     #resize-grip:hover { opacity: 0.85; }
+
+    /* ── Karaoke word highlighting ───────────────────────── */
+    .word { display: inline; }
+    .word.spoken { color: var(--body-dim); opacity: 0.45; }
+    .word.active {
+      background: var(--accent);
+      color: #000;
+      border-radius: 3px;
+      padding: 0 2px;
+      font-weight: bold;
+    }
+    .word.next {
+      text-decoration: underline;
+      text-underline-offset: 2px;
+      opacity: 0.85;
+    }
+
+    /* ── Uploads modal ───────────────────────────────────── */
+    #uploads-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.72);
+      z-index: 999;
+      overflow-y: auto;
+      padding: 20px 10px;
+    }
+    #uploads-modal.open { display: block; }
+    .modal-box {
+      max-width: 460px;
+      margin: 0 auto;
+      background: var(--sticky);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .modal-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .modal-title { color: var(--accent); font-size: 12px; font-weight: bold; letter-spacing: 0.08em; }
+    .modal-close {
+      background: none; border: none; color: var(--btn-color);
+      font-size: 16px; cursor: pointer; font-family: inherit;
+    }
+    #drop-zone {
+      border: 2px dashed var(--accent-dim);
+      border-radius: 6px;
+      padding: 18px 12px;
+      text-align: center;
+      cursor: pointer;
+      margin-bottom: 12px;
+      color: var(--body-dim);
+      font-size: 12px;
+      transition: background .15s, border-color .15s;
+    }
+    #drop-zone:hover, #drop-zone.drag-over {
+      background: var(--accent-faint);
+      border-color: var(--accent);
+    }
+    #drop-zone b { color: var(--accent); }
+    #drop-zone small { color: var(--label-color); display: block; margin-top: 4px; font-size: 10px; }
+    #uploads-list { max-height: 260px; overflow-y: auto; }
+    .upload-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .upload-item:last-child { border-bottom: none; }
+    .upload-name { flex: 1; color: var(--body-dim); word-break: break-all; }
+    .upload-chars { color: var(--label-color); font-size: 10px; white-space: nowrap; }
+    .upload-del {
+      background: none; border: none; color: #e55;
+      cursor: pointer; font-size: 14px; padding: 0 2px;
+      line-height: 1; flex-shrink: 0;
+    }
+    .upload-del:hover { color: #ff3333; }
+    .uploads-empty { color: var(--ph-color); font-style: italic; font-size: 12px; text-align: center; padding: 12px 0; }
   </style>
 </head>
 <body>
@@ -475,8 +558,9 @@
 
       <!-- Always-visible action bar -->
       <div id="action-bar">
+        <button id="btn-uploads"   class="hist-action-btn" title="Manage context documents">📎 DOCS</button>
         <button id="btn-summarize" class="hist-action-btn" title="Generate end-of-interview debrief">SUMMARIZE</button>
-        <button id="btn-clear" class="hist-action-btn" title="Clear history and reset context">CLEAR</button>
+        <button id="btn-clear"     class="hist-action-btn" title="Clear history and reset context">CLEAR</button>
       </div>
 
       <!-- History header — label only, shown when history exists -->
@@ -490,6 +574,22 @@
     </div>
 
   </div><!-- #app -->
+
+  <!-- Uploads modal -->
+  <div id="uploads-modal">
+    <div class="modal-box">
+      <div class="modal-hdr">
+        <span class="modal-title">📎 CONTEXT DOCUMENTS</span>
+        <button class="modal-close" id="btn-uploads-close" title="Close">✕</button>
+      </div>
+      <div id="drop-zone">
+        Drop files here or <b>click to browse</b>
+        <small>Supports .txt .md .json .pdf .docx — 10 MB max each</small>
+        <input type="file" id="file-input" style="display:none" multiple accept=".txt,.md,.json,.pdf,.docx">
+      </div>
+      <div id="uploads-list"></div>
+    </div>
+  </div>
 
   <div id="resize-grip"></div>
 
@@ -518,6 +618,97 @@
     let answerSpan = null;
     let answerDone = false;   // true after answer_done, until next transcript
     let currentQType = 'new_topic';
+
+    // ── Karaoke state ──────────────────────────────────────
+    let karaokeWords  = [];   // [{text: normalized, el: span}]
+    let karaokePos    = 0;    // index of current active word
+    let karaokeBuffer = '';   // accumulator for partial LLM tokens
+    let karaokeActive = false;
+    const FUZZY_SKIP_MAX = 2;
+
+    function karaokeReset() {
+      karaokeWords  = [];
+      karaokePos    = 0;
+      karaokeBuffer = '';
+      karaokeActive = false;
+    }
+
+    // Called for every answer_chunk token — builds word spans incrementally
+    function karaokeAppend(token) {
+      karaokeBuffer += token;
+      // Split on whitespace runs, keeping the delimiters
+      const parts = karaokeBuffer.split(/(\s+)/);
+      const hasTrailingSpace = /\s$/.test(karaokeBuffer);
+      // If no trailing space, last chunk may be a partial word — hold it back
+      const complete = hasTrailingSpace ? parts : parts.slice(0, -1);
+      karaokeBuffer  = hasTrailingSpace ? '' : (parts[parts.length - 1] || '');
+
+      complete.forEach(chunk => {
+        if (/^\s+$/.test(chunk)) {
+          curA.appendChild(document.createTextNode(chunk));
+        } else if (chunk) {
+          const span = document.createElement('span');
+          span.className = 'word';
+          span.textContent = chunk;
+          curA.appendChild(span);
+          karaokeWords.push({
+            text: chunk.toLowerCase().replace(/[^a-z0-9]/g, ''),
+            el: span
+          });
+        }
+      });
+      karaokeApplyHighlight();
+    }
+
+    // Flush any remaining partial word on answer_done
+    function karaokeFlush() {
+      if (karaokeBuffer) {
+        const span = document.createElement('span');
+        span.className = 'word';
+        span.textContent = karaokeBuffer;
+        curA.appendChild(span);
+        karaokeWords.push({
+          text: karaokeBuffer.toLowerCase().replace(/[^a-z0-9]/g, ''),
+          el: span
+        });
+        karaokeBuffer = '';
+      }
+      karaokeApplyHighlight();
+      karaokeActive = false;
+    }
+
+    // Update .spoken / .active / .next classes and scroll active word into view
+    function karaokeApplyHighlight() {
+      karaokeWords.forEach((w, i) => {
+        w.el.className = 'word' +
+          (i < karaokePos          ? ' spoken' :
+           i === karaokePos        ? ' active' :
+           i === karaokePos + 1    ? ' next'   : '');
+      });
+      if (karaokeWords[karaokePos]) {
+        karaokeWords[karaokePos].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+
+    // Called with interim/final mic speech — advances highlight to matched word
+    function karaokeMatchSpoken(spokenText) {
+      if (!karaokeWords.length || karaokePos >= karaokeWords.length) return;
+      const spoken = spokenText
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, '')
+        .split(/\s+/)
+        .filter(Boolean);
+      spoken.forEach(sw => {
+        for (let skip = 0; skip <= FUZZY_SKIP_MAX && karaokePos + skip < karaokeWords.length; skip++) {
+          const kw = karaokeWords[karaokePos + skip].text;
+          if (kw && sw && (kw.includes(sw) || sw.includes(kw))) {
+            karaokePos += skip + 1;
+            karaokeApplyHighlight();
+            break;
+          }
+        }
+      });
+    }
 
     // ── Opacity / transparency ─────────────────────────────
     // Clamps slider value (10–100) and applies both:
@@ -697,6 +888,7 @@
 
       curQText = ''; curAText = ''; curYouText = '';
       answerSpan = null; answerDone = false; currentQType = 'new_topic';
+      karaokeReset();
       curQ.innerHTML = '<span class="placeholder">Listening…</span>';
       curA.innerHTML = '<span class="placeholder">Answer streams here…</span>';
       curYou.textContent = '';
@@ -734,35 +926,36 @@
           case 'answer_thinking': {
             curA.innerHTML = '<span class="thinking">Thinking…</span>';
             answerSpan = null;
+            karaokeReset();
+            karaokeActive = true;
             break;
           }
           case 'answer_chunk': {
             const th = curA.querySelector('.thinking');
-            if (th) th.remove();
+            if (th) { th.remove(); }
             const ph = curA.querySelector('.placeholder');
-            if (ph) ph.remove();
-            if (!answerSpan) {
-              answerSpan = document.createElement('span');
-              curA.appendChild(answerSpan);
-            }
-            answerSpan.textContent += msg.text;
+            if (ph) { ph.remove(); }
             curAText += msg.text;
+            karaokeAppend(msg.text);
             mainEl.scrollTop = 0;
             break;
           }
           case 'answer_done': {
+            karaokeFlush();
             answerDone = true;
             break;
           }
           case 'mic_transcript': {
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
+            karaokeMatchSpoken(msg.text);
             break;
           }
           case 'user_speech': {
             curYouText = msg.text;
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
+            karaokeMatchSpoken(msg.text);
             break;
           }
           case 'summary_start': {
@@ -772,6 +965,13 @@
             curA.innerHTML = '';
             answerDone = false;
             answerSpan = null;
+            karaokeReset();
+            break;
+          }
+          case 'uploads_changed': {
+            if (document.getElementById('uploads-modal').classList.contains('open')) {
+              refreshUploads();
+            }
             break;
           }
           case 'deepgram_status': {
@@ -812,6 +1012,91 @@
       histHdr.classList.remove('on');
       if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: 'reset_context' }));
+    });
+
+    // ── Uploads modal ──────────────────────────────────────
+
+    async function openUploads() {
+      document.getElementById('uploads-modal').classList.add('open');
+      await refreshUploads();
+    }
+    function closeUploads() {
+      document.getElementById('uploads-modal').classList.remove('open');
+    }
+    async function refreshUploads() {
+      try {
+        const res = await fetch('/uploads');
+        const items = await res.json();
+        const list = document.getElementById('uploads-list');
+        if (!items.length) {
+          list.innerHTML = '<div class="uploads-empty">No documents uploaded yet.</div>';
+          return;
+        }
+        list.innerHTML = items.map(u => `
+          <div class="upload-item">
+            <input type="checkbox" ${u.enabled ? 'checked' : ''}
+              onchange="toggleUpload('${u.id}', this.checked)" title="Include in LLM context">
+            <span class="upload-name">${escHtml(u.name)}</span>
+            <span class="upload-chars">${(u.chars/1000).toFixed(1)}K</span>
+            <button class="upload-del" onclick="deleteUpload('${u.id}')" title="Delete">🗑</button>
+          </div>`).join('');
+      } catch (e) {
+        console.error('refreshUploads error', e);
+      }
+    }
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+    async function toggleUpload(id, enabled) {
+      try {
+        await fetch(`/uploads/${id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+      } catch (e) { console.error('toggleUpload error', e); }
+    }
+    async function deleteUpload(id) {
+      try {
+        await fetch(`/uploads/${id}`, { method: 'DELETE' });
+        await refreshUploads();
+      } catch (e) { console.error('deleteUpload error', e); }
+    }
+    async function uploadFiles(files) {
+      for (const f of files) {
+        const fd = new FormData();
+        fd.append('file', f);
+        try {
+          const res = await fetch('/upload', { method: 'POST', body: fd });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            alert(`Upload failed: ${err.detail || res.statusText}`);
+          }
+        } catch (e) { console.error('upload error', e); }
+      }
+      await refreshUploads();
+    }
+
+    document.getElementById('btn-uploads').addEventListener('click', openUploads);
+    document.getElementById('btn-uploads-close').addEventListener('click', closeUploads);
+
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-input');
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => {
+      uploadFiles(e.target.files);
+      e.target.value = ''; // reset so same file can be re-added
+    });
+    dropZone.addEventListener('dragover', e => {
+      e.preventDefault();
+      dropZone.classList.add('drag-over');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      uploadFiles(e.dataTransfer.files);
     });
 
     document.getElementById('btn-min').addEventListener('click', () => {

@@ -618,22 +618,24 @@
     let karaokePos    = 0;    // index of current active word
     let karaokeBuffer = '';   // accumulator for partial LLM tokens
     let karaokeActive = false;
-    const FUZZY_SKIP_MAX = 1;
+    let lastMicWords  = [];   // words from the previous interim update
+
+    // Max words to look ahead when searching for a match
+    const KARAOKE_WINDOW = 6;
 
     function karaokeReset() {
       karaokeWords  = [];
       karaokePos    = 0;
       karaokeBuffer = '';
       karaokeActive = false;
+      lastMicWords  = [];
     }
 
     // Called for every answer_chunk token — builds word spans incrementally
     function karaokeAppend(token) {
       karaokeBuffer += token;
-      // Split on whitespace runs, keeping the delimiters
       const parts = karaokeBuffer.split(/(\s+)/);
       const hasTrailingSpace = /\s$/.test(karaokeBuffer);
-      // If no trailing space, last chunk may be a partial word — hold it back
       const complete = hasTrailingSpace ? parts : parts.slice(0, -1);
       karaokeBuffer  = hasTrailingSpace ? '' : (parts[parts.length - 1] || '');
 
@@ -681,24 +683,44 @@
       }
     }
 
-    // Called with interim/final mic speech — advances highlight to matched word
-    function karaokeMatchSpoken(spokenText) {
+    // Normalize a transcript string to a word array
+    function toWords(text) {
+      return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+    }
+
+    // Advance highlight by matching words against the AI answer.
+    // isFinal=true  → called from user_speech (complete utterance, reset delta tracker)
+    // isFinal=false → called from mic_transcript (interim, only process NEW words)
+    function karaokeMatchSpoken(spokenText, isFinal) {
       if (!karaokeWords.length || karaokePos >= karaokeWords.length) return;
-      const spoken = spokenText
-        .toLowerCase()
-        .replace(/[^a-z0-9\s]/g, '')
-        .split(/\s+/)
-        .filter(Boolean);
-      spoken.forEach(sw => {
-        for (let skip = 0; skip <= FUZZY_SKIP_MAX && karaokePos + skip < karaokeWords.length; skip++) {
-          const kw = karaokeWords[karaokePos + skip].text;
-          if (kw && sw && (kw.includes(sw) || sw.includes(kw))) {
-            karaokePos += skip + 1;
+
+      const currWords = toWords(spokenText);
+
+      // For interim results: only process words added since the last update
+      const newWords = isFinal ? currWords : currWords.slice(lastMicWords.length);
+
+      // Update delta tracker
+      if (isFinal) {
+        lastMicWords = [];   // next sentence starts fresh
+      } else {
+        lastMicWords = currWords;
+      }
+
+      if (!newWords.length) return;
+
+      // For each new spoken word, search forward in the answer within the window
+      for (const sw of newWords) {
+        if (karaokePos >= karaokeWords.length) break;
+        const end = Math.min(karaokePos + KARAOKE_WINDOW, karaokeWords.length);
+        for (let i = karaokePos; i < end; i++) {
+          const kw = karaokeWords[i].text;
+          if (kw && sw && (kw === sw || kw.includes(sw) || sw.includes(kw))) {
+            karaokePos = i + 1;
             karaokeApplyHighlight();
             break;
           }
         }
-      });
+      }
     }
 
     // ── Opacity / transparency ─────────────────────────────
@@ -939,13 +961,14 @@
           case 'mic_transcript': {
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
+            karaokeMatchSpoken(msg.text, false);  // interim — only new delta words
             break;
           }
           case 'user_speech': {
             curYouText = msg.text;
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
-            karaokeMatchSpoken(msg.text);
+            karaokeMatchSpoken(msg.text, true);   // final — resets delta for next sentence
             break;
           }
           case 'summary_start': {

@@ -414,18 +414,12 @@
 
     /* ── Karaoke word highlighting ───────────────────────── */
     .word { display: inline; }
-    .word.spoken { color: var(--body-dim); opacity: 0.45; }
     .word.active {
       background: var(--accent);
       color: #000;
       border-radius: 3px;
       padding: 0 2px;
       font-weight: bold;
-    }
-    .word.next {
-      text-decoration: underline;
-      text-underline-offset: 2px;
-      opacity: 0.85;
     }
 
     /* ── Uploads modal ───────────────────────────────────── */
@@ -624,7 +618,7 @@
     let karaokePos    = 0;    // index of current active word
     let karaokeBuffer = '';   // accumulator for partial LLM tokens
     let karaokeActive = false;
-    const FUZZY_SKIP_MAX = 2;
+    const FUZZY_SKIP_MAX = 1;
 
     function karaokeReset() {
       karaokeWords  = [];
@@ -677,13 +671,10 @@
       karaokeActive = false;
     }
 
-    // Update .spoken / .active / .next classes and scroll active word into view
+    // Highlight only the current word; everything else stays unstyled
     function karaokeApplyHighlight() {
       karaokeWords.forEach((w, i) => {
-        w.el.className = 'word' +
-          (i < karaokePos          ? ' spoken' :
-           i === karaokePos        ? ' active' :
-           i === karaokePos + 1    ? ' next'   : '');
+        w.el.className = i === karaokePos ? 'word active' : 'word';
       });
       if (karaokeWords[karaokePos]) {
         karaokeWords[karaokePos].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
@@ -948,7 +939,6 @@
           case 'mic_transcript': {
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
-            karaokeMatchSpoken(msg.text);
             break;
           }
           case 'user_speech': {

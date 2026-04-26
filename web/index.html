@@ -116,23 +116,6 @@
     }
     #engine-selector option { background: #1a1a1a; color: #a8ff78; }
 
-    /* Mute */
-    #btn-mute {
-      background: none;
-      border: 1px solid var(--accent-faint);
-      border-radius: 3px;
-      color: var(--btn-color);
-      font-size: 11px;
-      padding: 2px 5px;
-      cursor: pointer;
-      font-family: inherit;
-      white-space: nowrap;
-      flex-shrink: 0;
-      transition: background .15s, color .15s, border-color .15s;
-    }
-    #btn-mute:hover { background: var(--accent-faint); color: var(--accent); }
-    #btn-mute.muted { background: rgba(255,80,80,0.12); border-color: #ff5050; color: #ff5050; }
-
     /* B/W theme toggle */
     .theme-toggle {
       display: flex;
@@ -205,6 +188,22 @@
       border: 2px solid rgba(0,0,0,0.35);
     }
 
+    /* Deepgram error banner */
+    #deepgram-error {
+      display: none;
+      position: sticky;
+      top: 44px;
+      z-index: 50;
+      background: rgba(200,40,40,0.18);
+      border-bottom: 1px solid rgba(255,80,80,0.35);
+      color: #ff8080;
+      font-size: 11px;
+      padding: 4px 12px;
+      letter-spacing: 0.04em;
+      text-align: center;
+    }
+    #deepgram-error.on { display: block; }
+
     /* Status dot */
     #status-dot {
       width: 7px; height: 7px;
@@ -241,11 +240,14 @@
     #main {
       position: absolute;
       top: 44px; bottom: 0; left: 0; right: 0;
-      overflow-y: auto;
+      overflow-y: scroll;
+      overscroll-behavior: contain;
+      -webkit-overflow-scrolling: touch;
     }
-    #main::-webkit-scrollbar { width: 3px; }
+    #main::-webkit-scrollbar { width: 5px; }
     #main::-webkit-scrollbar-track { background: transparent; }
-    #main::-webkit-scrollbar-thumb { background: var(--accent-faint); border-radius: 2px; }
+    #main::-webkit-scrollbar-thumb { background: var(--accent-faint); border-radius: 3px; }
+    #main::-webkit-scrollbar-thumb:hover { background: var(--accent-dim); }
 
     /* ── Sticky current Q&A ──────────────────────────────── */
     #current-wrap {
@@ -281,7 +283,8 @@
       font-weight: bold;
     }
     .ql.interviewer { color: #ffaa00; }  /* Orange for interviewer */
-    .ql.ai { color: var(--accent); }     /* Green for AI */
+    .ql.you         { color: #64b5f6; }  /* Blue for interviewee */
+    .ql.ai          { color: var(--accent); }  /* Green for AI */
 
     .q-type {
       font-size: 8px;
@@ -308,6 +311,26 @@
       white-space: pre-wrap;
       flex: 1;
       min-height: 18px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    #cur-a::-webkit-scrollbar { width: 3px; }
+    #cur-a::-webkit-scrollbar-thumb { background: var(--accent-faint); border-radius: 2px; }
+
+    #cur-you {
+      color: #64b5f6;
+      font-size: 12px;
+      line-height: 1.45;
+      word-break: break-word;
+      flex: 1;
+    }
+
+    .hist-you {
+      color: #64b5f6;
+      font-size: 11px;
+      line-height: 1.4;
+      word-break: break-word;
+      font-style: italic;
     }
 
     .placeholder {
@@ -315,28 +338,47 @@
       font-style: italic;
     }
 
-    /* ── History ─────────────────────────────────────────── */
-    #history-hdr {
-      display: none;
-      align-items: center;
-      justify-content: space-between;
-      padding: 8px 12px 2px;
+    @keyframes thinking-pulse {
+      0%, 100% { opacity: 0.3; }
+      50%       { opacity: 1; }
     }
-    #history-hdr.on { display: flex; }
+    .thinking {
+      color: var(--accent-dim);
+      font-style: italic;
+      animation: thinking-pulse 1.1s ease-in-out infinite;
+    }
 
-    #btn-clear {
+    /* ── Action bar (always visible) ────────────────────── */
+    #action-bar {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      padding: 5px 12px;
+      background: var(--sticky);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .hist-action-btn {
       background: none;
       border: 1px solid var(--border);
       border-radius: 3px;
       color: var(--label-color);
       font-size: 9px;
-      padding: 1px 5px;
+      padding: 2px 7px;
       cursor: pointer;
       font-family: inherit;
       letter-spacing: 0.05em;
-      transition: color .15s, border-color .15s;
+      transition: color .15s, border-color .15s, background .15s;
     }
-    #btn-clear:hover { color: var(--accent); border-color: var(--accent-dim); }
+    .hist-action-btn:hover { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-faint); }
+
+    /* ── History ─────────────────────────────────────────── */
+    #history-hdr {
+      display: none;
+      padding: 6px 12px 2px;
+    }
+    #history-hdr.on { display: block; }
 
     #history { padding-bottom: 24px; }
 
@@ -388,7 +430,6 @@
           <option value="groq">⚡ Groq</option>
           <option value="claude">🧠 Claude</option>
         </select>
-        <button id="btn-mute">🎤 Live</button>
         <div class="theme-toggle" title="Background color">
           <button class="theme-btn active" id="btn-dark"  title="Dark">■</button>
           <button class="theme-btn"        id="btn-light" title="Light">□</button>
@@ -396,6 +437,10 @@
         <div class="opacity-wrap" title="Background opacity">
           <span class="opacity-icon">◐</span>
           <input type="range" id="opacity-slider" min="10" max="100" value="93" step="3">
+        </div>
+        <div class="opacity-wrap" id="uend-wrap" title="Pause sensitivity (ms before answer triggers)">
+          <span class="opacity-icon">⏱</span>
+          <input type="range" id="uend-slider" min="500" max="3000" value="1500" step="250">
         </div>
         <div id="status-dot" title="Connection status"></div>
       </div>
@@ -406,6 +451,8 @@
         <button class="win-btn" id="btn-close" title="Close">✕</button>
       </div>
     </div>
+
+    <div id="deepgram-error">⚠ Deepgram offline — transcription paused, retrying…</div>
 
     <div id="main">
 
@@ -420,12 +467,21 @@
           <span class="ql ai">AI</span>
           <div id="cur-a"><span class="placeholder">Answer streams here…</span></div>
         </div>
+        <div class="qa-row" id="you-row" style="display:none">
+          <span class="ql you">You</span>
+          <div id="cur-you"></div>
+        </div>
       </div>
 
-      <!-- History header -->
+      <!-- Always-visible action bar -->
+      <div id="action-bar">
+        <button id="btn-summarize" class="hist-action-btn" title="Generate end-of-interview debrief">SUMMARIZE</button>
+        <button id="btn-clear" class="hist-action-btn" title="Clear history and reset context">CLEAR</button>
+      </div>
+
+      <!-- History header — label only, shown when history exists -->
       <div id="history-hdr">
         <span class="sec-label" style="margin-bottom:0">History</span>
-        <button id="btn-clear">CLEAR</button>
       </div>
 
       <!-- Completed Q&A pairs — newest first -->
@@ -441,22 +497,27 @@
     const WS_URL    = `ws://${window.location.host}/ws/ui`;
     const curQ      = document.getElementById('cur-q');
     const curA      = document.getElementById('cur-a');
+    const curYou    = document.getElementById('cur-you');
+    const youRow    = document.getElementById('you-row');
     const histDiv   = document.getElementById('history');
     const histHdr   = document.getElementById('history-hdr');
     const selector  = document.getElementById('engine-selector');
     const statusDot = document.getElementById('status-dot');
-    const btnMute   = document.getElementById('btn-mute');
-    const opSlider  = document.getElementById('opacity-slider');
-    const bgEl      = document.getElementById('bg');
-    const root      = document.documentElement;
-    const mainEl    = document.getElementById('main');
+    const opSlider     = document.getElementById('opacity-slider');
+    const uendSlider   = document.getElementById('uend-slider');
+    const deepgramErr  = document.getElementById('deepgram-error');
+    const bgEl         = document.getElementById('bg');
+    const root         = document.documentElement;
+    const mainEl       = document.getElementById('main');
 
     let ws = null;
-    let isMuted = false;
+    let currentUend = 1500;
     let curQText = '';
     let curAText = '';
+    let curYouText = '';
     let answerSpan = null;
-    let currentQType = 'new_topic';  // Track question type from backend
+    let answerDone = false;   // true after answer_done, until next transcript
+    let currentQType = 'new_topic';
 
     // ── Opacity / transparency ─────────────────────────────
     // Clamps slider value (10–100) and applies both:
@@ -470,6 +531,7 @@
     function applyOpacity(val) {
       currentOpacity = Math.max(10, Math.min(100, val));
       opSlider.value = currentOpacity;
+      localStorage.setItem('ih_opacity', currentOpacity);
 
       // 1. Fade the background div so the colour softly disappears
       bgEl.style.opacity = currentOpacity / 100;
@@ -560,6 +622,7 @@
       bgMode = 'dark';
       document.getElementById('btn-dark').classList.add('active');
       document.getElementById('btn-light').classList.remove('active');
+      localStorage.setItem('ih_theme', 'dark');
       applyTheme();
     });
 
@@ -567,6 +630,7 @@
       bgMode = 'light';
       document.getElementById('btn-light').classList.add('active');
       document.getElementById('btn-dark').classList.remove('active');
+      localStorage.setItem('ih_theme', 'light');
       applyTheme();
     });
 
@@ -583,28 +647,21 @@
 
     // ── Helpers ────────────────────────────────────────────
 
-    function setMuteUI(muted) {
-      isMuted = muted;
-      btnMute.textContent = muted ? '🔇 Muted' : '🎤 Live';
-      btnMute.classList.toggle('muted', muted);
-    }
-
     function archiveAndReset() {
       if (!curQText && !curAText) return;
 
       const pair = document.createElement('div');
       pair.className = 'qa-pair';
 
+      // Interviewer row
       const qRow = document.createElement('div');
       qRow.className = 'qa-row';
-      const qlQ = document.createElement('span'); 
-      qlQ.className = 'ql interviewer'; 
+      const qlQ = document.createElement('span');
+      qlQ.className = 'ql interviewer';
       qlQ.textContent = 'Interviewer';
-      const qTxt = document.createElement('div');  qTxt.className = 'hist-q';
+      const qTxt = document.createElement('div'); qTxt.className = 'hist-q';
       qTxt.textContent = curQText || '(no transcript)';
       qRow.appendChild(qlQ); qRow.appendChild(qTxt);
-
-      // Add question type indicator if not new topic
       if (currentQType && currentQType !== 'new_topic') {
         const typeSpan = document.createElement('span');
         typeSpan.className = 'q-type ' + currentQType.replace('_', '-');
@@ -613,21 +670,37 @@
         if (typeSpan.textContent) qRow.appendChild(typeSpan);
       }
 
+      // AI row
       const aRow = document.createElement('div');
       aRow.className = 'qa-row';
       const qlA = document.createElement('span'); qlA.className = 'ql ai'; qlA.textContent = 'AI';
-      const aTxt = document.createElement('div');  aTxt.className = 'hist-a';
+      const aTxt = document.createElement('div'); aTxt.className = 'hist-a';
       aTxt.textContent = curAText;
       aRow.appendChild(qlA); aRow.appendChild(aTxt);
 
       pair.appendChild(qRow);
       pair.appendChild(aRow);
+
+      // You row — only if user said something
+      if (curYouText) {
+        const yRow = document.createElement('div');
+        yRow.className = 'qa-row';
+        const qlY = document.createElement('span'); qlY.className = 'ql you'; qlY.textContent = 'You';
+        const yTxt = document.createElement('div'); yTxt.className = 'hist-you';
+        yTxt.textContent = curYouText;
+        yRow.appendChild(qlY); yRow.appendChild(yTxt);
+        pair.appendChild(yRow);
+      }
+
       histDiv.insertBefore(pair, histDiv.firstChild);
       histHdr.classList.add('on');
 
-      curQText = ''; curAText = ''; answerSpan = null; currentQType = 'new_topic';
+      curQText = ''; curAText = ''; curYouText = '';
+      answerSpan = null; answerDone = false; currentQType = 'new_topic';
       curQ.innerHTML = '<span class="placeholder">Listening…</span>';
       curA.innerHTML = '<span class="placeholder">Answer streams here…</span>';
+      curYou.textContent = '';
+      youRow.style.display = 'none';
     }
 
     // ── WebSocket ──────────────────────────────────────────
@@ -637,8 +710,8 @@
 
       ws.onopen = () => {
         statusDot.className = 'connected';
-        ws.send(JSON.stringify({ type: 'set_engine', value: selector.value }));
-        ws.send(JSON.stringify({ type: 'set_muted',  value: isMuted }));
+        ws.send(JSON.stringify({ type: 'set_engine',        value: selector.value }));
+        ws.send(JSON.stringify({ type: 'set_utterance_end', value: currentUend }));
       };
       ws.onclose = () => {
         statusDot.className = 'reconnecting';
@@ -653,11 +726,19 @@
 
         switch (msg.type) {
           case 'transcript': {
+            if (answerDone) archiveAndReset();
             curQText = msg.text;
             curQ.textContent = msg.text;
             break;
           }
+          case 'answer_thinking': {
+            curA.innerHTML = '<span class="thinking">Thinking…</span>';
+            answerSpan = null;
+            break;
+          }
           case 'answer_chunk': {
+            const th = curA.querySelector('.thinking');
+            if (th) th.remove();
             const ph = curA.querySelector('.placeholder');
             if (ph) ph.remove();
             if (!answerSpan) {
@@ -669,9 +750,35 @@
             mainEl.scrollTop = 0;
             break;
           }
-          case 'answer_done':   { archiveAndReset(); break; }
-          case 'mute_state':    { setMuteUI(msg.muted); break; }
-          case 'question_type': { 
+          case 'answer_done': {
+            answerDone = true;
+            break;
+          }
+          case 'mic_transcript': {
+            youRow.style.display = 'flex';
+            curYou.textContent = msg.text;
+            break;
+          }
+          case 'user_speech': {
+            curYouText = msg.text;
+            youRow.style.display = 'flex';
+            curYou.textContent = msg.text;
+            break;
+          }
+          case 'summary_start': {
+            curQText = 'Session Summary';
+            curQ.textContent = 'Session Summary';
+            curAText = '';
+            curA.innerHTML = '';
+            answerDone = false;
+            answerSpan = null;
+            break;
+          }
+          case 'deepgram_status': {
+            deepgramErr.classList.toggle('on', !msg.connected);
+            break;
+          }
+          case 'question_type': {
             currentQType = msg.question_type; 
             break; 
           }
@@ -682,20 +789,29 @@
     // ── Controls ───────────────────────────────────────────
 
     selector.addEventListener('change', () => {
+      localStorage.setItem('ih_engine', selector.value);
       if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: 'set_engine', value: selector.value }));
     });
 
-    btnMute.addEventListener('click', () => {
-      const next = !isMuted;
-      setMuteUI(next);
+    uendSlider.addEventListener('change', () => {
+      currentUend = parseInt(uendSlider.value, 10);
+      uendSlider.title = `${currentUend}ms`;
+      localStorage.setItem('ih_uend', currentUend);
       if (ws && ws.readyState === WebSocket.OPEN)
-        ws.send(JSON.stringify({ type: 'set_muted', value: next }));
+        ws.send(JSON.stringify({ type: 'set_utterance_end', value: currentUend }));
+    });
+
+    document.getElementById('btn-summarize').addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: 'summarize' }));
     });
 
     document.getElementById('btn-clear').addEventListener('click', () => {
       histDiv.innerHTML = '';
       histHdr.classList.remove('on');
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: 'reset_context' }));
     });
 
     document.getElementById('btn-min').addEventListener('click', () => {
@@ -774,6 +890,21 @@
       resizing = false; 
       isDragging = false; 
     });
+
+    // ── Persistent settings (localStorage) ─────────────────
+    (function loadSettings() {
+      const op     = parseInt(localStorage.getItem('ih_opacity') || '93', 10);
+      const theme  = localStorage.getItem('ih_theme')  || 'dark';
+      const engine = localStorage.getItem('ih_engine') || 'groq';
+      const uend   = parseInt(localStorage.getItem('ih_uend') || '1500', 10);
+      currentOpacity = op;
+      bgMode         = theme;
+      currentUend    = uend;
+      uendSlider.value = uend;
+      selector.value   = engine;
+      document.getElementById('btn-dark').classList.toggle('active',  theme === 'dark');
+      document.getElementById('btn-light').classList.toggle('active', theme === 'light');
+    })();
 
     // Apply initial theme + opacity, then connect
     applyTheme();

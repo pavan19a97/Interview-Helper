@@ -29,6 +29,7 @@ app = FastAPI()
 connected_clients: set[WebSocket] = set()
 current_engine: str = "groq"
 current_muted: bool = False
+current_utterance_end_ms: int = 1500
 
 # Uvicorn's event loop — captured at startup so broadcast() can schedule
 # sends on the correct loop from any thread.
@@ -51,7 +52,7 @@ def serve_ui():
 
 @app.websocket("/ws/ui")
 async def ws_ui(websocket: WebSocket):
-    global current_engine, current_muted
+    global current_engine, current_muted, current_utterance_end_ms
     print("[main] Client connected", flush=True)
     await websocket.accept()
     connected_clients.add(websocket)
@@ -69,6 +70,16 @@ async def ws_ui(websocket: WebSocket):
                 current_muted = msg["value"]
                 print(f"[main] Muted: {current_muted}", flush=True)
                 await _broadcast_impl(json.dumps({"type": "mute_state", "muted": current_muted}))
+            elif msg.get("type") == "set_utterance_end" and isinstance(msg.get("value"), int):
+                current_utterance_end_ms = max(500, min(3000, msg["value"]))
+                print(f"[main] utterance_end_ms: {current_utterance_end_ms}", flush=True)
+            elif msg.get("type") == "reset_context":
+                from core.context_manager import reset_context
+                reset_context()
+                print("[main] Context reset", flush=True)
+            elif msg.get("type") == "summarize":
+                from core.llm_router import summarize_session
+                asyncio.ensure_future(summarize_session(current_engine))
     except WebSocketDisconnect:
         print("[main] Client disconnected", flush=True)
         pass
@@ -90,14 +101,14 @@ async def _broadcast_impl(payload: str) -> None:
 def broadcast(message: dict) -> None:
     """Thread-safe broadcast: schedules the send on uvicorn's event loop."""
     if _server_loop is None:
-        print("[main] ⚠ broadcast called but _server_loop is None!", flush=True)
+        print("[main] ! broadcast called but _server_loop is None!", flush=True)
         return
     try:
         asyncio.run_coroutine_threadsafe(
             _broadcast_impl(json.dumps(message)), _server_loop
         )
     except Exception as e:
-        print(f"[main] ⚠ broadcast error: {e}", flush=True)
+        print(f"[main] ! broadcast error: {e}", flush=True)
 
 
 # ── Everything below only runs when launched directly (not on import) ─────────
@@ -120,7 +131,7 @@ if __name__ == "__main__":
     # Give uvicorn a moment to bind to the port before loading the webview
     import time
     time.sleep(0.5)
-    print("[main] ✓ Server started", flush=True)
+    print("[main] OK Server started", flush=True)
 
     class _WindowAPI:
         def __init__(self):
@@ -188,7 +199,7 @@ if __name__ == "__main__":
         background_color="#111111",
     )
     _api.win = window
-    print("[main] ✓ Window created", flush=True)
+    print("[main] OK Window created", flush=True)
 
     def apply_transparency(hwnd):
         import time
@@ -228,7 +239,10 @@ if __name__ == "__main__":
         asyncio.set_event_loop(loop)
         try:
             print("[main] Running audio engine...", flush=True)
-            loop.run_until_complete(audio_engine.run())
+            loop.run_until_complete(asyncio.gather(
+            audio_engine.run(),
+            audio_engine.run_mic(),
+        ))
         except Exception as e:
             print(f"[main] Audio thread error: {e}", flush=True)
         finally:

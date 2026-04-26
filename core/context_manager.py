@@ -22,14 +22,16 @@ class QAPair:
     """Represents a single question-answer pair"""
     question: str
     answer: str
+    user_answer: str = ""  # What the interviewee actually said
     question_type: QuestionType = QuestionType.NEW_TOPIC
-    related_to: Optional[int] = None  # Index of related Q&A pair
+    related_to: Optional[int] = None
     timestamp: float = 0
-    
+
     def to_dict(self) -> dict:
         return {
             "question": self.question,
             "answer": self.answer,
+            "user_answer": self.user_answer,
             "question_type": self.question_type.value,
             "related_to": self.related_to
         }
@@ -50,19 +52,20 @@ class ConversationContext:
     def add_answer(self, answer: str) -> None:
         """Record the AI's answer to the current question"""
         if self.current_question:
-            # Analyze question type before adding
             qa_pair = QAPair(
                 question=self.current_question,
                 answer=answer,
                 question_type=self._analyze_question_type()
             )
             self.history.append(qa_pair)
-            
-            # Trim history if needed
             if len(self.history) > self.max_history:
                 self.history = self.history[-self.max_history:]
-            
             self.current_question = None
+
+    def add_user_speech(self, text: str) -> None:
+        """Record what the interviewee actually said in response."""
+        if self.history:
+            self.history[-1].user_answer = text
     
     def _analyze_question_type(self) -> QuestionType:
         """Analyze the current question's relationship to previous ones"""
@@ -130,17 +133,17 @@ class ConversationContext:
         return "\n".join(context_parts)
     
     def get_recent_context(self, count: int = 3) -> str:
-        """Get only the most recent N exchanges for context"""
+        """Get the most recent N exchanges for context, including interviewee responses."""
         if not self.history:
             return ""
-        
-        recent = self.history[-count:]
+
         context_parts = []
-        
-        for qa in recent:
-            context_parts.append(f"Q: {qa.question}")
-            context_parts.append(f"A: {qa.answer}\n")
-        
+        for qa in self.history[-count:]:
+            context_parts.append(f"Interviewer: {qa.question}")
+            if qa.user_answer:
+                context_parts.append(f"You said: {qa.user_answer}")
+            context_parts.append(f"AI suggested: {qa.answer}\n")
+
         return "\n".join(context_parts)
     
     def clear(self) -> None:

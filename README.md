@@ -12,7 +12,7 @@
 [![Version](https://img.shields.io/badge/version-1.4.0-brightgreen)](https://github.com/pavan19a97/Interview-Helper/releases/tag/v1.4.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[**Features**](#-features) • [**Architecture**](#-architecture) • [**Quick Start**](#-quick-start) • [**Configuration**](#-configuration) • [**Tech Stack**](#-tech-stack)
+[**Features**](#-features) • [**Architecture**](#-architecture) • [**Setup Guide**](#-first-time-setup) • [**Tech Stack**](#-tech-stack)
 
 ---
 
@@ -191,67 +191,237 @@ flowchart LR
 
 ---
 
-## 🚀 Quick Start
+## 🚀 First-Time Setup
 
-### Prerequisites
-- **Windows 10 / 11** (WASAPI loopback is Windows-only)
-- **Python 3.13+**
-- API keys for Deepgram, Groq, and Anthropic
+> **Estimated time: 10–15 minutes.** You'll need a Windows PC with internet access and about 500 MB of free disk space (for Python, dependencies, and the embedding model that downloads on first doc upload).
 
-### Installation
+---
+
+### Step 1 — System Requirements
+
+| Requirement | Details |
+|-------------|---------|
+| **OS** | Windows 10 (build 1903+) or Windows 11 — WASAPI loopback is Windows-only |
+| **Python** | 3.11 or later (3.13+ recommended) — [download here](https://www.python.org/downloads/) |
+| **Audio** | A working speaker/headphone output (for loopback capture) and optionally a microphone |
+| **Network** | Internet connection for Deepgram, Groq, and Anthropic API calls |
+
+> [!NOTE]
+> During Python installation, **check "Add Python to PATH"** — the app is launched from the command line.
+
+---
+
+### Step 2 — Clone & Install Dependencies
+
+Open **PowerShell** or **Command Prompt** and run:
 
 ```bash
+# Clone the repository
 git clone https://github.com/pavan19a97/Interview-Helper.git
 cd Interview-Helper
+
+# (Recommended) Create a virtual environment
+python -m venv .venv
+.venv\Scripts\activate
+
+# Install all dependencies
 pip install -r requirements.txt
 ```
 
-### Configuration
+<details>
+<summary><b>What gets installed?</b></summary>
 
-Create a `.env` file in the project root:
+| Package | Purpose |
+|---------|---------|
+| `fastapi` + `uvicorn` | Local WebSocket server |
+| `pywebview` | Desktop window (Edge WebView2) |
+| `pyaudiowpatch` | WASAPI loopback + mic audio capture |
+| `websockets` | Deepgram streaming connection |
+| `groq` | Groq LLM SDK |
+| `anthropic` | Anthropic Claude SDK |
+| `python-dotenv` | `.env` file loading |
+| `pypdf` + `python-docx` | Document text extraction |
+| `python-multipart` | File upload support |
+| `chromadb` | Local vector database for document context |
 
-```env
-DEEPGRAM_API_KEY=your_deepgram_key_here
-GROQ_API_KEY=your_groq_key_here
-ANTHROPIC_API_KEY=your_anthropic_key_here
+</details>
+
+---
+
+### Step 3 — Get Your API Keys
+
+You need **at least two** API keys to run the app. Copy the example file first:
+
+```bash
+copy .env.example .env
 ```
 
-Get your keys here:
-- 🟢 [Deepgram Console](https://console.deepgram.com/) — free tier includes nova-3
-- 🟠 [Groq Cloud](https://console.groq.com/) — free, very fast inference
-- 🟣 [Anthropic Console](https://console.anthropic.com/) — pay-as-you-go
+Then open `.env` in any text editor and replace the placeholder values:
 
-### Run
+```env
+DEEPGRAM_API_KEY=your_deepgram_api_key_here
+GROQ_API_KEY=your_groq_api_key_here
+# Optional — only needed if you want to use the Claude engine
+ANTHROPIC_API_KEY=your_anthropic_api_key_here
+```
+
+Here's where to get each key:
+
+#### 🟢 Deepgram (Required — powers transcription)
+1. Go to [console.deepgram.com](https://console.deepgram.com/) and create a free account
+2. Navigate to **API Keys** in the left sidebar
+3. Click **Create a New API Key**, give it a name, and copy the key
+4. Free tier includes **$200 in credit** — more than enough for testing
+
+#### 🟠 Groq (Required — default LLM engine)
+1. Go to [console.groq.com](https://console.groq.com/) and sign up
+2. Click **API Keys** → **Create API Key**
+3. Copy the key (starts with `gsk_`)
+4. Free tier with generous rate limits — no credit card needed
+
+#### 🟣 Anthropic (Optional — higher quality answers)
+1. Go to [console.anthropic.com](https://console.anthropic.com/) and create an account
+2. Navigate to **API Keys** → **Create Key**
+3. Copy the key (starts with `sk-ant-`)
+4. Pay-as-you-go pricing — you only need this if you want to switch to Claude mid-session
+
+> [!IMPORTANT]
+> The app works with **just Deepgram + Groq** (both free). The Anthropic key is optional — if omitted, the Claude engine toggle will show an error when selected, but Groq will work fine.
+
+---
+
+### Step 4 — Configure Your Audio
+
+The app captures audio from two sources:
+
+| Source | What it captures | How it works |
+|--------|-----------------|--------------|
+| **System Audio (Loopback)** | The interviewer's voice from Zoom/Teams/Meet | Captures whatever plays through your default speakers/headphones |
+| **Microphone** | Your own voice (for the "You said" track) | Uses your default Windows microphone |
+
+**Before running the app:**
+
+1. Open **Settings → System → Sound**
+2. Make sure your **Output** device is set to the speakers/headphones you'll use during the interview
+3. Make sure your **Input** device is set to your microphone
+4. Play some audio (e.g., a YouTube video) to verify your speakers are working — the loopback only captures what you can hear
+
+> [!TIP]
+> If you're using a Bluetooth headset, make sure it's connected **before** launching the app — the audio device is selected at startup.
+
+---
+
+### Step 5 — Personalize (Important!)
+
+The AI answers are tailored to a specific candidate profile. **You must update this to match your own background**, otherwise the AI will answer as someone else.
+
+**Edit `core/llm_router.py`** and find the `SYSTEM_PROMPT` variable (around line 33). Replace the `CANDIDATE PROFILE` section with your own:
+
+```python
+SYSTEM_PROMPT = """
+You are a silent, real-time interview copilot for YOUR NAME HERE.
+
+CANDIDATE PROFILE:
+- Your title | X years experience in your domains
+- Current role: Your current role — what you built/led
+- Key wins: Your measurable achievements
+- Tech stack: Your tools and frameworks
+- Cloud: Your cloud platforms
+- Education: Your degree(s)
+...
+"""
+```
+
+**Also update `config/keyterms.json`** with domain terms relevant to your field. These are sent to Deepgram for better proper-noun recognition:
+
+```json
+{
+  "keyterms": [
+    "YourFramework", "YourCompany", "YourTools"
+  ],
+  "postprocess": {
+    "Mis Heard Term": "CorrectTerm"
+  }
+}
+```
+
+---
+
+### Step 6 — Run the App
 
 ```bash
 python main.py
 ```
 
-The overlay appears in the top-right of your screen, frameless and on top.
+**What happens on first launch:**
+
+1. The terminal prints startup logs — watch for `[main] OK` messages
+2. A frameless, dark overlay window appears on your screen
+3. The status dot in the top-right of the overlay turns **🟢 green** when Deepgram connects
+4. If you upload documents (📎 button), the first upload triggers a one-time **~80 MB embedding model download** — this takes 30–60 seconds
+
+**Expected terminal output on a healthy start:**
+
+```
+[main] Starting Interview Helper...
+[main] Finding free port...
+[main] Using port: 54321
+[main] Starting uvicorn server...
+[main] OK Server started
+[main] Creating webview window...
+[main] OK Window created
+[main] Starting audio thread...
+[main] Starting webview...
+[audio_engine] Initializing...
+[audio_engine] Opening audio stream...
+[audio_engine] Found loopback: device 5, 48000Hz, 2ch
+[audio_engine] OK Audio stream started successfully
+[audio_engine] OK Connected to Deepgram (Token 48000Hz/2ch)
+[mic_engine] OK Mic stream started: 48000Hz, 1ch
+[mic_engine] OK Connected to Deepgram (Token 48000Hz/1ch)
+```
 
 ---
 
-## 🎛️ UI Controls
+### Step 7 — Verify Everything Works
 
-<div align="center">
+Use this checklist to confirm the app is running correctly:
 
-| Control | Function |
-|---------|----------|
-| **⚡ Engine** | Switch between Groq (fast) and Claude (quality) |
-| **■ □** | Dark / Light theme toggle |
-| **◐ Slider** | Background opacity 10–100% |
-| **⏱ Slider** | Pause sensitivity 500–3000ms (when LLM fires) |
-| **● Status Dot** | 🟢 connected · 🟡 reconnecting · 🔴 offline |
-| **─** | Minimize |
-| **✕** | Close |
-| **SUMMARIZE** | Generate end-of-session debrief |
-| **SAVE** | Save session to `data/sessions/*.json` and clear context |
-| **CLEAR** | Reset history + LLM conversation context |
-| **📎 DOCS** | Upload context documents (PDF, DOCX, TXT, MD, JSON) |
-| **Drag (header)** | Move window |
-| **Resize grip** | Bottom-right corner |
+- [ ] **Status dot is green** — Deepgram connection is live
+- [ ] **Play audio** through your speakers → the **Interviewer** row should show transcription
+- [ ] **Speak into your mic** → the **You** row should show your speech
+- [ ] **Ask a question aloud** (play a YouTube interview question) → after a pause, the **AI** row should stream an answer
+- [ ] **Toggle the engine** (⚡ button) — should switch between Groq and Claude
+- [ ] **Adjust opacity slider** — window should become more/less transparent
+- [ ] **Drag the window** from the dark header area
 
-</div>
+> [!WARNING]
+> If the status dot stays **🔴 red**, check the terminal for errors. Common causes:
+> - Invalid `DEEPGRAM_API_KEY` in `.env`
+> - No internet connection
+> - Firewall blocking WebSocket connections to `api.deepgram.com`
+
+---
+
+### Quick Reference — Keyboard-Free Controls
+
+Once the app is running, everything is controlled from the overlay UI:
+
+| Control | Location | Function |
+|---------|----------|----------|
+| ⚡ Engine toggle | Header | Switch Groq ↔ Claude |
+| ■ □ Theme | Header | Dark / Light mode |
+| Opacity slider | Header | 10–100% window transparency |
+| Pause slider | Header | 500–3000ms silence before LLM fires |
+| 🔴/🟢 Dot | Header | Connection status |
+| ─ | Header | Minimize |
+| ✕ | Header | Close app |
+| SUMMARIZE | Below current Q&A | End-of-session debrief |
+| SAVE | Below current Q&A | Save session to `data/sessions/` |
+| CLEAR | Below current Q&A | Wipe history & reset context |
+| 📎 DOCS | Below current Q&A | Upload context docs (PDF, DOCX, TXT, MD, JSON) |
+
+The overlay is **invisible to screen capture** — Zoom, Teams, Meet, and OBS will not see it.
 
 ---
 

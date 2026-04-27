@@ -412,14 +412,13 @@
     }
     #resize-grip:hover { opacity: 0.85; }
 
-    /* ── Karaoke word highlighting ───────────────────────── */
-    .word { display: inline; }
-    .word.active {
-      background: var(--accent);
-      color: #000;
-      border-radius: 3px;
-      padding: 0 2px;
-      font-weight: bold;
+    /* ── Sentence highlighting ───────────────────────────── */
+    .sentence { display: inline; border-radius: 3px; }
+    .sentence.active {
+      background: var(--accent-faint);
+      outline: 1px solid var(--accent-dim);
+      padding: 1px 3px;
+      transition: background 0.15s;
     }
 
     /* ── Uploads modal ───────────────────────────────────── */
@@ -613,116 +612,91 @@
     let answerDone = false;   // true after answer_done, until next transcript
     let currentQType = 'new_topic';
 
-    // ── Karaoke state ──────────────────────────────────────
-    let karaokeWords  = [];   // [{text: normalized, el: span}]
-    let karaokePos    = 0;    // index of the word currently being read (highlighted)
-    let karaokeBuffer = '';   // accumulator for partial LLM tokens
-    let karaokeActive = false;
+    // ── Sentence highlight state ───────────────────────────
+    let sentences   = [];   // [{words: string[], el: span}]
+    let sentencePos = 0;    // index of currently highlighted sentence
 
-    function karaokeReset() {
-      karaokeWords  = [];
-      karaokePos    = 0;
-      karaokeBuffer = '';
-      karaokeActive = false;
-    }
-
-    // Build word spans as LLM tokens stream in
-    function karaokeAppend(token) {
-      karaokeBuffer += token;
-      const parts = karaokeBuffer.split(/(\s+)/);
-      const hasTrailingSpace = /\s$/.test(karaokeBuffer);
-      const complete = hasTrailingSpace ? parts : parts.slice(0, -1);
-      karaokeBuffer  = hasTrailingSpace ? '' : (parts[parts.length - 1] || '');
-
-      complete.forEach(chunk => {
-        if (/^\s+$/.test(chunk)) {
-          curA.appendChild(document.createTextNode(chunk));
-        } else if (chunk) {
-          const span = document.createElement('span');
-          span.className = 'word';
-          span.textContent = chunk;
-          curA.appendChild(span);
-          karaokeWords.push({
-            text: chunk.toLowerCase().replace(/[^a-z0-9]/g, ''),
-            el: span
-          });
-        }
-      });
-      karaokeApplyHighlight();
-    }
-
-    // Flush any partial last token on answer_done
-    function karaokeFlush() {
-      if (karaokeBuffer) {
-        const span = document.createElement('span');
-        span.className = 'word';
-        span.textContent = karaokeBuffer;
-        curA.appendChild(span);
-        karaokeWords.push({
-          text: karaokeBuffer.toLowerCase().replace(/[^a-z0-9]/g, ''),
-          el: span
-        });
-        karaokeBuffer = '';
-      }
-      karaokeApplyHighlight();
-      karaokeActive = false;
-    }
-
-    // Highlight only the current active word
-    function karaokeApplyHighlight() {
-      karaokeWords.forEach((w, i) => {
-        w.el.className = i === karaokePos ? 'word active' : 'word';
-      });
-      if (karaokeWords[karaokePos]) {
-        karaokeWords[karaokePos].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
+    function sentenceReset() {
+      sentences   = [];
+      sentencePos = 0;
     }
 
     function toWords(text) {
       return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
     }
 
-    // Tail-anchor search: take the last N spoken words as a phrase, find that
-    // exact sequence in the answer, and advance the highlight to right after it.
-    //
-    // Why this works: the user is reading the AI answer verbatim, so the tail
-    // of what they've said so far is a unique N-gram that pinpoints their exact
-    // position in the answer. Multi-word exact matching eliminates the false
-    // positives that plagued single-word includes() matching.
-    //
-    // Fires on every mic_transcript (interim) — cumulative spoken text grows
-    // word-by-word, so the tail anchor advances naturally without delta tracking.
-    function karaokeMatchSpoken(spokenText) {
-      if (!karaokeWords.length) return;
+    // Called on answer_done: split the full accumulated answer into sentence spans.
+    // During streaming we render plain text; once done we upgrade to sentence spans
+    // so the highlight can work sentence-by-sentence.
+    function sentenceFinalize() {
+      if (!curAText.trim()) return;
 
-      const spoken    = toWords(spokenText);
+      // Split on . ! ? followed by whitespace — keep punctuation with the sentence
+      const raw   = curAText.replace(/([.!?])\s+/g, '$1\n').split('\n');
+      const parts = raw.map(s => s.trim()).filter(s => s.length > 2);
+      if (!parts.length) return;
+
+      curA.innerHTML = '';
+      sentences = [];
+
+      parts.forEach((sentText, i) => {
+        const span = document.createElement('span');
+        span.className = 'sentence';
+        span.textContent = sentText;
+        curA.appendChild(span);
+        if (i < parts.length - 1) curA.appendChild(document.createTextNode(' '));
+        sentences.push({ words: toWords(sentText), el: span });
+      });
+
+      sentenceApplyHighlight();
+    }
+
+    function sentenceApplyHighlight() {
+      sentences.forEach((s, i) => {
+        s.el.className = i === sentencePos ? 'sentence active' : 'sentence';
+      });
+      if (sentences[sentencePos]) {
+        sentences[sentencePos].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+
+    // Tail-anchor search at sentence level.
+    // Takes the last 3 spoken words and finds which sentence in the answer
+    // contains that exact sequence — then highlights that whole sentence.
+    //
+    // A 3-word phrase almost never spans two different sentences, so this is
+    // both precise and fast. Falls back to 2-word and 1-word anchors if needed.
+    function sentenceMatchSpoken(spokenText) {
+      if (!sentences.length) return;
+
+      const spoken = toWords(spokenText);
       if (!spoken.length) return;
 
-      const ansWords  = karaokeWords.map(w => w.text);
-
-      // Try anchors from longest (most precise) to shortest (fallback)
-      // Max anchor = 4 words; minimum = 1
-      const maxAnchor = Math.min(4, spoken.length);
+      const maxAnchor = Math.min(3, spoken.length);
 
       for (let anchorLen = maxAnchor; anchorLen >= 1; anchorLen--) {
-        const tail = spoken.slice(-anchorLen);   // last N spoken words
+        const tail = spoken.slice(-anchorLen);   // last N spoken words as anchor
 
-        // Search forward from slightly before current pos (allows ±2 correction)
-        const from = Math.max(0, karaokePos - 2);
+        // Search from 1 sentence before current (allows small backward correction)
+        const from = Math.max(0, sentencePos - 1);
 
-        for (let i = from; i <= ansWords.length - anchorLen; i++) {
-          // Require every word in the anchor to match exactly (after normalization)
-          let hit = true;
-          for (let j = 0; j < anchorLen; j++) {
-            if (ansWords[i + j] !== tail[j]) { hit = false; break; }
-          }
-          if (hit) {
-            const newPos = i + anchorLen;
-            if (newPos > karaokePos) {          // only advance, never go backward
-              karaokePos = newPos;
-              karaokeApplyHighlight();
+        for (let i = from; i < sentences.length; i++) {
+          const sw = sentences[i].words;
+          if (sw.length < anchorLen) continue;
+
+          // Check if tail appears as consecutive words anywhere in this sentence
+          for (let j = 0; j <= sw.length - anchorLen; j++) {
+            let hit = true;
+            for (let k = 0; k < anchorLen; k++) {
+              if (sw[j + k] !== tail[k]) { hit = false; break; }
             }
-            return;                             // stop — longest match wins
+            if (hit) {
+              if (i !== sentencePos) {
+                sentencePos = i;
+                sentenceApplyHighlight();
+              }
+              return;   // longest match found — stop
+            }
           }
         }
       }
@@ -906,7 +880,7 @@
 
       curQText = ''; curAText = ''; curYouText = '';
       answerSpan = null; answerDone = false; currentQType = 'new_topic';
-      karaokeReset();
+      sentenceReset();
       curQ.innerHTML = '<span class="placeholder">Listening…</span>';
       curA.innerHTML = '<span class="placeholder">Answer streams here…</span>';
       curYou.textContent = '';
@@ -944,36 +918,37 @@
           case 'answer_thinking': {
             curA.innerHTML = '<span class="thinking">Thinking…</span>';
             answerSpan = null;
-            karaokeReset();
-            karaokeActive = true;
+            sentenceReset();
             break;
           }
           case 'answer_chunk': {
             const th = curA.querySelector('.thinking');
-            if (th) { th.remove(); }
+            if (th) th.remove();
             const ph = curA.querySelector('.placeholder');
-            if (ph) { ph.remove(); }
+            if (ph) ph.remove();
+            // Plain text during streaming — sentence spans built on answer_done
             curAText += msg.text;
-            karaokeAppend(msg.text);
+            curA.appendChild(document.createTextNode(msg.text));
             mainEl.scrollTop = 0;
             break;
           }
           case 'answer_done': {
-            karaokeFlush();
+            // Upgrade plain text → sentence spans, highlight sentence 0
+            sentenceFinalize();
             answerDone = true;
             break;
           }
           case 'mic_transcript': {
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
-            karaokeMatchSpoken(msg.text);   // interim — tail-anchor search
+            sentenceMatchSpoken(msg.text);
             break;
           }
           case 'user_speech': {
             curYouText = msg.text;
             youRow.style.display = 'flex';
             curYou.textContent = msg.text;
-            karaokeMatchSpoken(msg.text);   // final — same algorithm
+            sentenceMatchSpoken(msg.text);
             break;
           }
           case 'summary_start': {
@@ -983,7 +958,7 @@
             curA.innerHTML = '';
             answerDone = false;
             answerSpan = null;
-            karaokeReset();
+            sentenceReset();
             break;
           }
           case 'uploads_changed': {

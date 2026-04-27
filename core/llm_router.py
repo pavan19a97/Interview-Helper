@@ -74,10 +74,12 @@ RESPONSE RULES:
 """
 
 
-def build_system_prompt() -> str:
-    """Build system prompt, prepending any enabled upload context."""
+def build_system_prompt(query: str = "") -> str:
+    """Build system prompt, prepending any enabled upload context.
+    `query` (the interviewer's transcript) is used by the vector retriever
+    to fetch the most relevant document chunks. Empty query -> no context."""
     from core.uploads import build_context_block
-    block = build_context_block()
+    block = build_context_block(query)
     if block:
         return (
             SYSTEM_PROMPT.strip()
@@ -123,7 +125,7 @@ CURRENT QUESTION (Interviewer):
             stream = await client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[
-                    {"role": "system", "content": build_system_prompt()},
+                    {"role": "system", "content": build_system_prompt(transcript)},
                     {"role": "user", "content": user_content},
                 ],
                 stream=True,
@@ -151,7 +153,7 @@ CURRENT QUESTION (Interviewer):
             async with anthropic.AsyncAnthropic(api_key=_ANTHROPIC_API_KEY).messages.stream(
                 model="claude-haiku-4-5-20251001",
                 max_tokens=512,
-                system=build_system_prompt(),
+                system=build_system_prompt(transcript),
                 messages=[{"role": "user", "content": user_content}],
             ) as stream:
                 async for delta in stream.text_stream:

@@ -5,3 +5,8 @@ __pycache__/
 .venv/
 venv/
 env/
+
+# Local data — vector DB, uploaded docs, saved sessions
+data/chroma/
+data/uploads.json
+data/sessions/

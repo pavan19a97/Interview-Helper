@@ -99,7 +99,10 @@ async def upload_file(file: UploadFile = File(...)):
     data = await file.read()
     if len(data) > 10 * 1024 * 1024:  # 10 MB limit
         raise HTTPException(status_code=413, detail="File too large (10 MB max)")
-    entry = uploads_add(file.filename, data)
+    # Embedding is CPU-bound and may take a few seconds — run off the event
+    # loop so Deepgram broadcasts and other clients aren't blocked.
+    loop = asyncio.get_event_loop()
+    entry = await loop.run_in_executor(None, uploads_add, file.filename, data)
     await _broadcast_impl(json.dumps({"type": "uploads_changed"}))
     return JSONResponse(entry)
 
@@ -228,6 +231,20 @@ if __name__ == "__main__":
     import time
     time.sleep(0.5)
     print("[main] OK Server started", flush=True)
+
+    # Background prewarm: if the user has any enabled docs, eagerly load
+    # Chroma + embedding model so the first interviewer question doesn't
+    # pay the cold-start cost (5-15s on first ever run).
+    def _prewarm_uploads():
+        try:
+            from core.uploads import list_all, _get_collection
+            if any(e.get("enabled") for e in list_all()):
+                _get_collection()
+                print("[main] Upload retrieval prewarmed", flush=True)
+        except Exception as e:
+            print(f"[main] Upload prewarm skipped: {e}", flush=True)
+
+    threading.Thread(target=_prewarm_uploads, daemon=True).start()
 
     class _WindowAPI:
         def __init__(self):

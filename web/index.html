@@ -323,7 +323,13 @@
       line-height: 1.45;
       word-break: break-word;
       flex: 1;
+      max-height: 2.9em;        /* ~2 lines tall, regardless of total spoken */
+      overflow-y: auto;
+      overflow-x: hidden;
+      scrollbar-width: thin;
     }
+    #cur-you::-webkit-scrollbar { width: 3px; }
+    #cur-you::-webkit-scrollbar-thumb { background: rgba(100,181,246,0.3); border-radius: 2px; }
 
     .hist-you {
       color: #64b5f6;
@@ -771,7 +777,12 @@
     // Sliding-window Jaccard similarity with Levenshtein-tolerant word equality.
     // Returns {sentIdx, wordIdx, score} for the best match across all sentences,
     // or null if no match above threshold.
-    function jaccardBestMatch(spokenNorm, fromSentence) {
+    //
+    // Distance penalty: prefers staying near currentPos. A jump of +1 is free
+    // (natural sentence advance), +2 needs noticeably stronger evidence,
+    // +3 needs near-certainty. Stops far-away coincidental word overlaps from
+    // pulling the highlight ahead by multiple sentences.
+    function jaccardBestMatch(spokenNorm, fromSentence, currentPos) {
       const WINDOW = Math.min(8, Math.max(4, spokenNorm.length));
       const spoken = spokenNorm.slice(-WINDOW); // last N spoken words
       if (spoken.length < 2) return null;
@@ -784,6 +795,13 @@
         const sentNorm = sentences[si].normWords;
         const sLen = sentNorm.length;
         if (!sLen) continue;
+
+        // Distance from current highlight: 0 = current, 1 = next, 2+ = jump
+        const distance = Math.max(0, si - currentPos);
+        // Adjacent sentences (≤ +1) carry no penalty. Each step beyond
+        // multiplies the required confidence: +2 needs ~1.4× the evidence,
+        // +3 needs ~2×, +4 needs ~2.6×.
+        const penalty = distance <= 1 ? 1.0 : Math.max(0.35, 1.0 - (distance - 1) * 0.3);
 
         // Slide window through sentence
         const maxStart = Math.max(0, sLen - spLen);
@@ -806,13 +824,23 @@
             }
           }
 
-          const score = matches / Math.max(spLen, winLen);
+          const rawScore = matches / Math.max(spLen, winLen);
+          const adjScore = rawScore * penalty;
 
-          if (score > THRESHOLD && (!best || score > best.score)) {
-            best = { sentIdx: si, wordIdx: wi + Math.floor(winLen / 2), score };
-            if (score > 0.75) return best; // early exit on strong match
+          // Compare on adjusted score so close-by matches win ties
+          if (rawScore > THRESHOLD && (!best || adjScore > best.adjScore)) {
+            best = { sentIdx: si, wordIdx: wi + Math.floor(winLen / 2), score: rawScore, adjScore };
+            // Early exit only on near-certain dominant match
+            if (rawScore > 0.85 && distance <= 1) return best;
           }
         }
+      }
+
+      // Final guard: even if best is set, refuse a multi-sentence jump unless
+      // the raw score is dominant. Prevents a 0.5 match three sentences ahead
+      // from overriding sequential reading.
+      if (best && best.sentIdx - currentPos >= 2 && best.score < 0.6) {
+        return null;
       }
 
       return best;
@@ -915,19 +943,36 @@
       if (!sentences.length || spokenBuffer.length < 2) return;
 
       const from = Math.max(0, sentencePos - 1);
-      const match = jaccardBestMatch(spokenBuffer, from);
+      const match = jaccardBestMatch(spokenBuffer, from, sentencePos);
 
       if (match) {
-        const changed = (match.sentIdx !== sentencePos) || (match.wordIdx !== activeWordIdx);
+        let nextSent = match.sentIdx;
+        let nextWord = match.wordIdx;
+
+        // Look-ahead auto-advance: if the user has reached the last ~5 words
+        // of the current sentence (and is past its midpoint), pre-jump to
+        // the next sentence so the upcoming line is already highlighted
+        // before they finish speaking the current one.
+        const cur = sentences[nextSent];
+        if (cur && nextSent < sentences.length - 1) {
+          const total = cur.wordEls.length;
+          const wordsLeft = total - 1 - nextWord;
+          if (wordsLeft <= 5 && nextWord >= Math.floor(total / 2)) {
+            nextSent += 1;
+            nextWord = 0;
+          }
+        }
+
+        const changed = (nextSent !== sentencePos) || (nextWord !== activeWordIdx);
         if (changed) {
-          sentencePos = match.sentIdx;
-          activeWordIdx = match.wordIdx;
+          sentencePos = nextSent;
+          activeWordIdx = nextWord;
           sentenceApplyHighlight();
 
           // Auto-scroll the active sentence into view
           const activeSent = sentences[sentencePos];
           if (activeSent && activeSent.el) {
-            activeSent.el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            activeSent.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
           }
         }
       }
@@ -1176,6 +1221,7 @@
           case 'mic_transcript': {
             youRow.style.display = 'flex';
             curYou.textContent = curYouText ? curYouText + ' ' + msg.text : msg.text;
+            curYou.scrollTop = curYou.scrollHeight;  // keep latest 1-2 lines visible
             sentenceMatchSpoken(msg.text);
             break;
           }
@@ -1183,6 +1229,7 @@
             curYouText = curYouText ? curYouText + ' ' + msg.text : msg.text;
             youRow.style.display = 'flex';
             curYou.textContent = curYouText;
+            curYou.scrollTop = curYou.scrollHeight;  // keep latest 1-2 lines visible
             sentenceMatchSpoken(msg.text);
             break;
           }

@@ -3,6 +3,7 @@ import json
 import os
 import queue as sync_queue
 import sys
+import time
 
 import pyaudiowpatch as pyaudio
 import websockets
@@ -12,6 +13,9 @@ load_dotenv()
 
 _DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
 _CHUNK = 2048
+
+# Proactively reconnect after this many seconds to avoid Deepgram's ~10-min session limit
+_MAX_CONN_SECS = 480  # 8 minutes
 
 from core.transcript_postprocess import get_dg_keyterms_qs, postprocess_transcript
 
@@ -49,7 +53,6 @@ def _find_loopback_device(pa: pyaudio.PyAudio):
 
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
-        # pyaudiowpatch appends " [Loopback]" to the output device name
         if info.get("isLoopbackDevice") and info["name"].startswith(device_info["name"]):
             ch = int(info["maxInputChannels"]) or 1
             print(f"[audio_engine] Found loopback: device {i}, {info['defaultSampleRate']}Hz, {ch}ch", flush=True)
@@ -73,15 +76,13 @@ async def run() -> None:
         print(f"[audio_engine] ERROR - device error: {exc}", flush=True)
         return
 
-    # Thread-safe queue filled by pyaudio's internal callback thread
-    audio_queue: sync_queue.Queue = sync_queue.Queue(maxsize=100)
+    audio_queue: sync_queue.Queue = sync_queue.Queue(maxsize=200)
 
     def _audio_callback(in_data, frame_count, time_info, status):
         try:
-            # Use put with timeout to prevent blocking
-            audio_queue.put(in_data, timeout=0.1)
+            audio_queue.put_nowait(in_data)
         except sync_queue.Full:
-            pass  # drop oldest data if we fall behind
+            pass
         return (None, pyaudio.paContinue)
 
     try:
@@ -104,9 +105,12 @@ async def run() -> None:
 
     print(f"[audio_engine] sample rate: {sample_rate}Hz, channels: {channels}", flush=True)
 
-    async def send_audio(ws):
+    async def send_audio(ws, deadline: float):
+        """Send audio chunks; raise after deadline to force proactive reconnect."""
         loop = asyncio.get_event_loop()
         while True:
+            if time.monotonic() >= deadline:
+                raise Exception(f"[audio_engine] Proactive reconnect after {_MAX_CONN_SECS}s")
             try:
                 data = await asyncio.wait_for(
                     loop.run_in_executor(None, audio_queue.get),
@@ -128,6 +132,12 @@ async def run() -> None:
 
             msg_type = result.get("type", "Results")
 
+            # Deepgram sent an error — log and force reconnect
+            if msg_type == "Error":
+                err = result.get("description") or result.get("error_code") or str(result)
+                print(f"[audio_engine] Deepgram error message: {err}", flush=True)
+                raise Exception(f"Deepgram error: {err}")
+
             if msg_type == "UtteranceEnd":
                 full_text = " ".join(transcript_buffer).strip()
                 transcript_buffer.clear()
@@ -136,9 +146,8 @@ async def run() -> None:
                     print(f"[audio_engine] utterance: {full_text}", flush=True)
                     broadcast({"type": "transcript", "text": full_text})
                     await stream_answer(full_text, _main.current_engine)
-                # Reconnect if utterance_end_ms changed (URL must be rebuilt)
                 if _main.current_utterance_end_ms != active_uend:
-                    print(f"[audio_engine] utterance_end_ms changed to {_main.current_utterance_end_ms}ms — reconnecting", flush=True)
+                    print(f"[audio_engine] utterance_end_ms changed — reconnecting", flush=True)
                     raise Exception("utterance_end_ms changed")
                 continue
 
@@ -162,8 +171,11 @@ async def run() -> None:
             else:
                 broadcast({"type": "transcript", "text": " ".join(transcript_buffer + [text])})
 
+        # async for exited — Deepgram closed the connection without raising
+        raise Exception("[audio_engine] Deepgram closed connection (server-side)")
+
     _base = "wss://api.deepgram.com/v1/listen"
-    _working: tuple | None = None  # (url, headers, utterance_end_ms) of last successful connection
+    _working: tuple | None = None
 
     def _build_attempts(sr, ch):
         uend = _main.current_utterance_end_ms
@@ -186,7 +198,6 @@ async def run() -> None:
 
     while True:
         try:
-            # Prefer the last working combo if utterance_end_ms hasn't changed
             if _working and _working[2] == _main.current_utterance_end_ms:
                 attempts = [("reconnect", _working[0], _working[1])]
             else:
@@ -203,30 +214,35 @@ async def run() -> None:
                         active_uend = _main.current_utterance_end_ms
                         _working = (conn_url, hdrs, active_uend)
                         transcript_buffer.clear()
+                        deadline = time.monotonic() + _MAX_CONN_SECS
                         print(f"[audio_engine] OK Connected to Deepgram ({desc})", flush=True)
                         broadcast({"type": "deepgram_status", "connected": True})
-                        await asyncio.gather(send_audio(ws), receive_results(ws, active_uend))
+                        await asyncio.gather(
+                            send_audio(ws, deadline),
+                            receive_results(ws, active_uend),
+                        )
                 except asyncio.CancelledError:
                     print("[audio_engine] Connection cancelled", flush=True)
                     raise
                 except Exception as exc:
-                    print(f"[audio_engine] Connection failed ({desc}): {exc}", flush=True)
+                    print(f"[audio_engine] Connection ended ({desc}): {exc}", flush=True)
                     if _working and _working[0] == conn_url:
-                        # Was connected, then dropped — retry same method next loop
+                        # Was connected, now dropped — show red, retry immediately
+                        broadcast({"type": "deepgram_status", "connected": False})
                         break
                     continue
             else:
                 # All fresh attempts failed
                 _working = None
-                print("[audio_engine] ! All connection attempts failed — retrying in 1s", flush=True)
+                print("[audio_engine] ! All connection attempts failed — retrying in 2s", flush=True)
                 broadcast({"type": "deepgram_status", "connected": False})
-                await asyncio.sleep(1)
+                await asyncio.sleep(2)
 
         except asyncio.CancelledError:
             break
         except Exception as exc:
-            print(f"[audio_engine] ! Unexpected error: {exc} — retrying in 1s", flush=True)
-            await asyncio.sleep(1)
+            print(f"[audio_engine] ! Unexpected error: {exc} — retrying in 2s", flush=True)
+            await asyncio.sleep(2)
 
     print("[audio_engine] Shutting down audio stream...", flush=True)
     stream.stop_stream()
@@ -251,11 +267,11 @@ async def run_mic() -> None:
         print(f"[mic_engine] No mic found, skipping: {exc}", flush=True)
         return
 
-    audio_queue: sync_queue.Queue = sync_queue.Queue(maxsize=100)
+    audio_queue: sync_queue.Queue = sync_queue.Queue(maxsize=200)
 
     def _audio_callback(in_data, frame_count, time_info, status):
         try:
-            audio_queue.put(in_data, timeout=0.1)
+            audio_queue.put_nowait(in_data)
         except sync_queue.Full:
             pass
         return (None, pyaudio.paContinue)
@@ -297,9 +313,11 @@ async def run_mic() -> None:
             (f"key-query {sr}Hz/{ch}ch", url_key, {}),
         ]
 
-    async def send_audio(ws):
+    async def send_audio(ws, deadline: float):
         loop = asyncio.get_event_loop()
         while True:
+            if time.monotonic() >= deadline:
+                raise Exception(f"[mic_engine] Proactive reconnect after {_MAX_CONN_SECS}s")
             try:
                 data = await asyncio.wait_for(
                     loop.run_in_executor(None, audio_queue.get), timeout=5.0
@@ -319,6 +337,11 @@ async def run_mic() -> None:
                 continue
 
             msg_type = result.get("type", "Results")
+
+            if msg_type == "Error":
+                err = result.get("description") or result.get("error_code") or str(result)
+                print(f"[mic_engine] Deepgram error message: {err}", flush=True)
+                raise Exception(f"Deepgram error: {err}")
 
             if msg_type == "UtteranceEnd":
                 full_text = " ".join(transcript_buffer).strip()
@@ -349,6 +372,9 @@ async def run_mic() -> None:
             else:
                 broadcast({"type": "mic_transcript", "text": " ".join(transcript_buffer + [text])})
 
+        # async for exited — server closed the connection
+        raise Exception("[mic_engine] Deepgram closed connection (server-side)")
+
     while True:
         try:
             if _working and _working[2] == _main.current_utterance_end_ms:
@@ -367,12 +393,16 @@ async def run_mic() -> None:
                         active_uend = _main.current_utterance_end_ms
                         _working = (conn_url, hdrs, active_uend)
                         transcript_buffer.clear()
+                        deadline = time.monotonic() + _MAX_CONN_SECS
                         print(f"[mic_engine] OK Connected to Deepgram ({desc})", flush=True)
-                        await asyncio.gather(send_audio(ws), receive_results(ws, active_uend))
+                        await asyncio.gather(
+                            send_audio(ws, deadline),
+                            receive_results(ws, active_uend),
+                        )
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    print(f"[mic_engine] Connection failed ({desc}): {exc}", flush=True)
+                    print(f"[mic_engine] Connection ended ({desc}): {exc}", flush=True)
                     if _working and _working[0] == conn_url:
                         break
                     continue

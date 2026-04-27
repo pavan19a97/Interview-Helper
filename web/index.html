@@ -642,33 +642,62 @@
     let sentencePos = 0;    // index of currently highlighted sentence
     let activeWordIdx = -1; // index of highlighted word within active sentence
     let spokenBuffer = [];  // cumulative normalized spoken words for current QA round
+    let _matchTimer = 0;    // debounce timer for sentenceMatchSpoken
 
     function sentenceReset() {
       sentences   = [];
       sentencePos = 0;
       activeWordIdx = -1;
       spokenBuffer = [];
+      clearTimeout(_matchTimer);
     }
 
     function toWords(text) {
       return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
     }
 
-    // ── Contraction expansion map ──────────────────────────
+    // ── Contraction expansion (word-level lookup — no regex per call) ──
     const CONTRACTIONS = {
-      "i'm": "i am", "i've": "i have", "i'll": "i will", "i'd": "i would",
-      "you're": "you are", "you've": "you have", "you'll": "you will", "you'd": "you would",
-      "he's": "he is", "she's": "she is", "it's": "it is",
-      "we're": "we are", "we've": "we have", "we'll": "we will", "we'd": "we would",
-      "they're": "they are", "they've": "they have", "they'll": "they will", "they'd": "they would",
-      "that's": "that is", "there's": "there is", "here's": "here is",
-      "what's": "what is", "who's": "who is", "where's": "where is",
-      "don't": "do not", "doesn't": "does not", "didn't": "did not",
-      "won't": "will not", "wouldn't": "would not", "shouldn't": "should not",
-      "couldn't": "could not", "can't": "cannot", "isn't": "is not",
-      "aren't": "are not", "wasn't": "was not", "weren't": "were not",
-      "hasn't": "has not", "haven't": "have not", "hadn't": "had not",
-      "let's": "let us", "gonna": "going to", "wanna": "want to", "gotta": "got to",
+      "i'm": "i am", "im": "i am", "i've": "i have", "ive": "i have",
+      "i'll": "i will", "ill": "i will", "i'd": "i would", "id": "i would",
+      "you're": "you are", "youre": "you are",
+      "you've": "you have", "youve": "you have",
+      "you'll": "you will", "youll": "you will",
+      "you'd": "you would", "youd": "you would",
+      "he's": "he is", "hes": "he is",
+      "she's": "she is", "shes": "she is",
+      "it's": "it is", "its": "it is",
+      "we're": "we are", "were": "we are",
+      "we've": "we have", "weve": "we have",
+      "we'll": "we will", "well": "we will",
+      "we'd": "we would", "wed": "we would",
+      "they're": "they are", "theyre": "they are",
+      "they've": "they have", "theyve": "they have",
+      "they'll": "they will", "theyll": "they will",
+      "they'd": "they would", "theyd": "they would",
+      "that's": "that is", "thats": "that is",
+      "there's": "there is", "theres": "there is",
+      "here's": "here is", "heres": "here is",
+      "what's": "what is", "whats": "what is",
+      "who's": "who is", "whos": "who is",
+      "where's": "where is", "wheres": "where is",
+      "don't": "do not", "dont": "do not",
+      "doesn't": "does not", "doesnt": "does not",
+      "didn't": "did not", "didnt": "did not",
+      "won't": "will not", "wont": "will not",
+      "wouldn't": "would not", "wouldnt": "would not",
+      "shouldn't": "should not", "shouldnt": "should not",
+      "couldn't": "could not", "couldnt": "could not",
+      "can't": "can not", "cant": "can not",
+      "isn't": "is not", "isnt": "is not",
+      "aren't": "are not", "arent": "are not",
+      "wasn't": "was not", "wasnt": "was not",
+      "weren't": "were not", "werent": "were not",
+      "hasn't": "has not", "hasnt": "has not",
+      "haven't": "have not", "havent": "have not",
+      "hadn't": "had not", "hadnt": "had not",
+      "let's": "let us", "lets": "let us",
+      "gonna": "going to", "wanna": "want to", "gotta": "got to",
     };
 
     const FILLERS = new Set([
@@ -678,12 +707,12 @@
 
     function stem(w) {
       if (w.length <= 3) return w;
-      if (w.endsWith('ying')) return w.slice(0, -4) + 'y';  // deploying → deploy
-      if (w.endsWith('ing') && w.length > 5 && w[w.length-4] === w[w.length-5]) return w.slice(0, -4); // running → run
+      if (w.endsWith('ying')) return w.slice(0, -4) + 'y';
+      if (w.endsWith('ing') && w.length > 5 && w[w.length-4] === w[w.length-5]) return w.slice(0, -4);
       if (w.endsWith('ing') && w.length > 4) return w.slice(0, -3);
-      if (w.endsWith('tion') || w.endsWith('sion')) return w.slice(0, -3); // automation → automa
+      if (w.endsWith('tion') || w.endsWith('sion')) return w.slice(0, -3);
       if (w.endsWith('ied') && w.length > 4) return w.slice(0, -3) + 'y';
-      if (w.endsWith('ed') && w.length > 4 && w[w.length-3] === w[w.length-4]) return w.slice(0, -3); // stopped → stop
+      if (w.endsWith('ed') && w.length > 4 && w[w.length-3] === w[w.length-4]) return w.slice(0, -3);
       if (w.endsWith('ed') && w.length > 3) return w.slice(0, -2);
       if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'y';
       if (w.endsWith('es') && w.length > 3) return w.slice(0, -2);
@@ -692,20 +721,23 @@
       return w;
     }
 
-    // Normalize: expand contractions, remove fillers, stem
+    // Fast normalize: word-level contraction lookup (no regex), filter, stem
     function normalize(text) {
-      // Expand contractions before stripping punctuation
-      let lower = text.toLowerCase();
-      for (const [contraction, expansion] of Object.entries(CONTRACTIONS)) {
-        // Word-boundary-safe replacement
-        const re = new RegExp('\\b' + contraction.replace("'", "[\'\']") + '\\b', 'g');
-        lower = lower.replace(re, expansion);
+      const raw = text.toLowerCase().split(/[\s,;:.!?'"()\[\]{}]+/).filter(Boolean);
+      const out = [];
+      for (let i = 0; i < raw.length; i++) {
+        const w = raw[i];
+        // Check 2-token contraction first (e.g. "don't" split into "don" + "t")
+        const exp = CONTRACTIONS[w];
+        if (exp) {
+          for (const ew of exp.split(' ')) {
+            if (!FILLERS.has(ew)) out.push(stem(ew));
+          }
+        } else if (!FILLERS.has(w)) {
+          out.push(stem(w));
+        }
       }
-
-      let words = lower.replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-      words = words.filter(w => !FILLERS.has(w));
-      words = words.map(stem);
-      return words;
+      return out;
     }
 
     // Levenshtein distance between two strings
@@ -746,42 +778,39 @@
 
       const THRESHOLD = 0.25;
       let best = null;
+      const spLen = spoken.length;
 
       for (let si = fromSentence; si < sentences.length; si++) {
         const sentNorm = sentences[si].normWords;
-        if (!sentNorm.length) continue;
+        const sLen = sentNorm.length;
+        if (!sLen) continue;
 
         // Slide window through sentence
-        const maxStart = Math.max(0, sentNorm.length - spoken.length);
+        const maxStart = Math.max(0, sLen - spLen);
         for (let wi = 0; wi <= maxStart; wi++) {
-          const winLen = Math.min(spoken.length, sentNorm.length - wi);
-          const window = sentNorm.slice(wi, wi + winLen);
+          const winLen = Math.min(spLen, sLen - wi);
 
-          // Count fuzzy matches
+          // Count fuzzy matches — use bitmask instead of Set for speed
           let matches = 0;
-          const usedSpoken = new Set();
-          const usedWindow = new Set();
+          let usedSpoken = 0; // bitmask, max 8 bits
 
-          for (let a = 0; a < window.length; a++) {
-            for (let b = 0; b < spoken.length; b++) {
-              if (usedWindow.has(a) || usedSpoken.has(b)) continue;
-              if (wordsMatch(window[a], spoken[b])) {
+          for (let a = 0; a < winLen; a++) {
+            const sw = sentNorm[wi + a];
+            for (let b = 0; b < spLen; b++) {
+              if (usedSpoken & (1 << b)) continue;
+              if (sw === spoken[b] || wordsMatch(sw, spoken[b])) {
                 matches++;
-                usedWindow.add(a);
-                usedSpoken.add(b);
+                usedSpoken |= (1 << b);
                 break;
               }
             }
           }
 
-          // Jaccard = intersection / union
-          const union = new Set([...window, ...spoken]).size;
-          // Use match-based score: matches / total unique words considered
-          const score = matches / Math.max(spoken.length, window.length);
+          const score = matches / Math.max(spLen, winLen);
 
           if (score > THRESHOLD && (!best || score > best.score)) {
-            // wordIdx = middle of the matched window in the sentence
             best = { sentIdx: si, wordIdx: wi + Math.floor(winLen / 2), score };
+            if (score > 0.75) return best; // early exit on strong match
           }
         }
       }
@@ -866,16 +895,25 @@
     }
 
     // Accumulate spoken words and run Jaccard match against sentences.
+    // Debounced to ~80ms so rapid interim transcripts don't cause jank.
     function sentenceMatchSpoken(spokenText) {
       if (!sentences.length) return;
 
       const newWords = normalize(spokenText);
       if (!newWords.length) return;
 
-      // Append to cumulative buffer
+      // Append to cumulative buffer, cap at 20 words to bound compute
       spokenBuffer.push(...newWords);
+      if (spokenBuffer.length > 20) spokenBuffer = spokenBuffer.slice(-20);
 
-      // Search from 1 sentence before current (allows small backward correction)
+      // Debounce: run matcher at most once per 80ms
+      clearTimeout(_matchTimer);
+      _matchTimer = setTimeout(_runMatch, 80);
+    }
+
+    function _runMatch() {
+      if (!sentences.length || spokenBuffer.length < 2) return;
+
       const from = Math.max(0, sentencePos - 1);
       const match = jaccardBestMatch(spokenBuffer, from);
 

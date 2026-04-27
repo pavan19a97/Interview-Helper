@@ -27,13 +27,55 @@ import core.audio_engine as audio_engine
 # ── Shared state ───────────────────────────────────────────────────────────────
 app = FastAPI()
 connected_clients: set[WebSocket] = set()
-current_engine: str = "groq"
-current_muted: bool = False
-current_utterance_end_ms: int = 1500
+
+
+class _Settings:
+    """Thread-safe accessor for settings shared between the uvicorn loop
+    (writer, via WS handler) and the audio thread (reader)."""
+
+    def __init__(self):
+        self._lock = threading.RLock()
+        self._engine = "groq"
+        self._muted = False
+        self._utterance_end_ms = 1500
+
+    @property
+    def engine(self) -> str:
+        with self._lock:
+            return self._engine
+
+    @engine.setter
+    def engine(self, value: str):
+        with self._lock:
+            self._engine = value
+
+    @property
+    def muted(self) -> bool:
+        with self._lock:
+            return self._muted
+
+    @muted.setter
+    def muted(self, value: bool):
+        with self._lock:
+            self._muted = value
+
+    @property
+    def utterance_end_ms(self) -> int:
+        with self._lock:
+            return self._utterance_end_ms
+
+    @utterance_end_ms.setter
+    def utterance_end_ms(self, value: int):
+        with self._lock:
+            self._utterance_end_ms = value
+
+
+settings = _Settings()
 
 # Uvicorn's event loop — captured at startup so broadcast() can schedule
 # sends on the correct loop from any thread.
 _server_loop: asyncio.AbstractEventLoop = None
+_server_loop_ready = threading.Event()  # set once _server_loop is captured
 
 print("[main] Starting Interview Helper...", flush=True)
 
@@ -42,6 +84,7 @@ print("[main] Starting Interview Helper...", flush=True)
 async def _capture_loop():
     global _server_loop
     _server_loop = asyncio.get_running_loop()
+    _server_loop_ready.set()
 
 
 @app.get("/")
@@ -90,7 +133,6 @@ async def patch_upload(item_id: str, body: dict):
 
 @app.websocket("/ws/ui")
 async def ws_ui(websocket: WebSocket):
-    global current_engine, current_muted, current_utterance_end_ms
     print("[main] Client connected", flush=True)
     await websocket.accept()
     connected_clients.add(websocket)
@@ -102,15 +144,19 @@ async def ws_ui(websocket: WebSocket):
             except json.JSONDecodeError:
                 continue
             if msg.get("type") == "set_engine" and msg.get("value") in ("groq", "claude"):
-                current_engine = msg["value"]
-                print(f"[main] Engine switched to: {current_engine}", flush=True)
+                settings.engine = msg["value"]
+                print(f"[main] Engine switched to: {settings.engine}", flush=True)
             elif msg.get("type") == "set_muted" and isinstance(msg.get("value"), bool):
-                current_muted = msg["value"]
-                print(f"[main] Muted: {current_muted}", flush=True)
-                await _broadcast_impl(json.dumps({"type": "mute_state", "muted": current_muted}))
+                settings.muted = msg["value"]
+                print(f"[main] Muted: {settings.muted}", flush=True)
+                if settings.muted:
+                    # Signal audio engine to clear its in-flight buffer so stale
+                    # partial frames don't merge with speech after unmute.
+                    audio_engine.clear_transcript_buffers()
+                await _broadcast_impl(json.dumps({"type": "mute_state", "muted": settings.muted}))
             elif msg.get("type") == "set_utterance_end" and isinstance(msg.get("value"), int):
-                current_utterance_end_ms = max(500, min(3000, msg["value"]))
-                print(f"[main] utterance_end_ms: {current_utterance_end_ms}", flush=True)
+                settings.utterance_end_ms = max(500, min(3000, msg["value"]))
+                print(f"[main] utterance_end_ms: {settings.utterance_end_ms}", flush=True)
             elif msg.get("type") == "reset_context":
                 from core.context_manager import reset_context
                 reset_context()
@@ -122,7 +168,11 @@ async def ws_ui(websocket: WebSocket):
                 await _broadcast_impl(json.dumps({"type": "context_saved", "filename": filename}))
             elif msg.get("type") == "summarize":
                 from core.llm_router import summarize_session
-                asyncio.ensure_future(summarize_session(current_engine))
+                task = asyncio.create_task(summarize_session(settings.engine))
+                def log_summary_error(t):
+                    if t.exception():
+                        print(f"[main] Summary task failed: {t.exception()}", flush=True)
+                task.add_done_callback(log_summary_error)
     except WebSocketDisconnect:
         print("[main] Client disconnected", flush=True)
         pass
@@ -142,7 +192,10 @@ async def _broadcast_impl(payload: str) -> None:
 
 
 def broadcast(message: dict) -> None:
-    """Thread-safe broadcast: schedules the send on uvicorn's event loop."""
+    """Thread-safe broadcast: schedules the send on uvicorn's event loop.
+    Waits up to 5s for the server loop to be ready on first call."""
+    if not _server_loop_ready.is_set():
+        _server_loop_ready.wait(timeout=5.0)
     if _server_loop is None:
         print("[main] ! broadcast called but _server_loop is None!", flush=True)
         return

@@ -10,6 +10,11 @@ load_dotenv()
 _GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 _ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 
+if not _GROQ_API_KEY:
+    print("[llm_router] WARNING: GROQ_API_KEY not set — Groq engine will fail", flush=True)
+if not _ANTHROPIC_API_KEY:
+    print("[llm_router] WARNING: ANTHROPIC_API_KEY not set — Claude engine will fail", flush=True)
+
 print("[llm_router] Initialized", flush=True)
 
 SUMMARY_PROMPT = """
@@ -85,21 +90,21 @@ def build_system_prompt() -> str:
 async def stream_answer(transcript: str, engine: str) -> None:
     import sys
     broadcast = sys.modules['__main__'].broadcast  # thread-safe sync function
-    
+
     print(f"[llm_router] Processing: '{transcript[:50]}...'", flush=True)
-    
-    # Get conversation context
+
+    # Register question and get a direct pair reference — safe even if another
+    # question arrives before this answer finishes (concurrent async tasks).
     ctx = get_context()
-    ctx.add_question(transcript)
-    
-    # Get question type before processing — must broadcast before answer_done
-    q_type = ctx._analyze_question_type()
-    print(f"[llm_router] Question type: {q_type.value}", flush=True)
-    broadcast({"type": "question_type", "question_type": q_type.value})
-    
+    pair = ctx.add_question(transcript)
+
+    # Broadcast question type (already analyzed inside add_question)
+    print(f"[llm_router] Question type: {pair.question_type.value}", flush=True)
+    broadcast({"type": "question_type", "question_type": pair.question_type.value})
+
     # Build messages with context — last 2 exchanges keeps prompts lean
     context_str = ctx.get_recent_context(count=2)
-    
+
     if context_str:
         user_content = f"""CONVERSATION CONTEXT:
 {context_str}
@@ -123,7 +128,7 @@ CURRENT QUESTION (Interviewer):
                 ],
                 stream=True,
             )
-            
+
             full_answer = ""
             async for chunk in stream:
                 text = chunk.choices[0].delta.content
@@ -132,13 +137,12 @@ CURRENT QUESTION (Interviewer):
                     broadcast({"type": "answer_chunk", "text": text})
             print(f"[llm_router] OK Groq response complete", flush=True)
             broadcast({"type": "answer_done"})
-            
-            # Store the answer in context after streaming completes
-            ctx.add_answer(full_answer)
+            ctx.add_answer(pair, full_answer)
         except Exception as e:
             print(f"[llm_router] ERROR - Groq API failed: {e}", flush=True)
             broadcast({"type": "answer_chunk", "text": f"[Error: {e}]"})
             broadcast({"type": "answer_done"})
+            ctx.add_answer(pair, f"[Error: {e}]")
 
     else:  # claude
         print(f"[llm_router] Calling Claude API...", flush=True)
@@ -155,13 +159,12 @@ CURRENT QUESTION (Interviewer):
                     broadcast({"type": "answer_chunk", "text": delta})
             print(f"[llm_router] OK Claude response complete", flush=True)
             broadcast({"type": "answer_done"})
-            
-            # Store the answer in context after streaming completes
-            ctx.add_answer(full_answer)
+            ctx.add_answer(pair, full_answer)
         except Exception as e:
             print(f"[llm_router] ERROR - Claude API failed: {e}", flush=True)
             broadcast({"type": "answer_chunk", "text": f"[Error: {e}]"})
             broadcast({"type": "answer_done"})
+            ctx.add_answer(pair, f"[Error: {e}]")
 
 
 async def summarize_session(engine: str) -> None:

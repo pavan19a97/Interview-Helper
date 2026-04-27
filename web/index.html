@@ -528,7 +528,7 @@
       </div>
     </div>
 
-    <div id="deepgram-error">⚠ Deepgram offline — transcription paused, retrying…</div>
+    <div id="deepgram-error"></div>
 
     <div id="main">
 
@@ -607,6 +607,21 @@
 
     let ws = null;
     let currentUend = 1500;
+    let dgLoopbackOk = true;
+    let dgMicOk = true;
+
+    function updateDeepgramBanner() {
+      if (dgLoopbackOk && dgMicOk) {
+        deepgramErr.textContent = '';
+        deepgramErr.classList.remove('on');
+      } else {
+        const parts = [];
+        if (!dgLoopbackOk) parts.push('system audio offline');
+        if (!dgMicOk)      parts.push('mic offline');
+        deepgramErr.textContent = '⚠ Deepgram ' + parts.join(' + ') + ' — retrying…';
+        deepgramErr.classList.add('on');
+      }
+    }
     let curQText = '';
     let curAText = '';
     let curYouText = '';
@@ -627,14 +642,80 @@
       return text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
     }
 
+    // Normalize: remove fillers, apply simple stemming for better fuzzy matching
+    function normalize(text) {
+      let words = text.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
+
+      // Remove fillers (um, uh, like, etc.)
+      const fillers = new Set(['um', 'uh', 'err', 'hmm', 'like', 'basically', 'literally', 'actually']);
+      words = words.filter(w => !fillers.has(w));
+
+      // Simple stemming: remove common suffixes
+      words = words.map(w => {
+        if (w.endsWith('ing') && w.length > 3) return w.slice(0, -3);
+        if (w.endsWith('ed') && w.length > 2) return w.slice(0, -2);
+        if (w.endsWith('ies') && w.length > 3) return w.slice(0, -3) + 'i';
+        if (w.endsWith('s') && w.length > 2 && w !== 'is') return w.slice(0, -1);
+        if (w.endsWith('ly') && w.length > 2) return w.slice(0, -2);
+        return w;
+      });
+
+      return words;
+    }
+
+    // Levenshtein distance: measure word-level edit distance for fuzzy matching
+    function levenshteinDistance(a, b) {
+      const m = a.length, n = b.length;
+      const dp = Array(n + 1).fill(0).map(() => Array(m + 1).fill(0));
+
+      for (let i = 0; i <= m; i++) dp[0][i] = i;
+      for (let j = 0; j <= n; j++) dp[j][0] = j;
+
+      for (let j = 1; j <= n; j++) {
+        for (let i = 1; i <= m; i++) {
+          if (a[i - 1] === b[j - 1]) {
+            dp[j][i] = dp[j - 1][i - 1];
+          } else {
+            dp[j][i] = 1 + Math.min(dp[j - 1][i], dp[j][i - 1], dp[j - 1][i - 1]);
+          }
+        }
+      }
+      return dp[n][m];
+    }
+
+    // Fuzzy match: find anchor words in sentence with edit distance <= 1 per word
+    function fuzzyMatch(sentenceWords, spokenWords) {
+      const maxAnchorLen = Math.min(4, spokenWords.length);
+
+      // Try anchors of decreasing length (longest first for better precision)
+      for (let anchorLen = maxAnchorLen; anchorLen >= 1; anchorLen--) {
+        const anchor = spokenWords.slice(-anchorLen);
+
+        // Slide window through sentence
+        for (let i = 0; i <= sentenceWords.length - anchorLen; i++) {
+          let allMatch = true;
+          for (let j = 0; j < anchorLen; j++) {
+            const dist = levenshteinDistance(anchor[j], sentenceWords[i + j]);
+            if (dist > 1) {
+              allMatch = false;
+              break;
+            }
+          }
+          if (allMatch) return i; // Return starting index of match
+        }
+      }
+      return -1;
+    }
+
     // Called on answer_done: split the full accumulated answer into sentence spans.
     // During streaming we render plain text; once done we upgrade to sentence spans
     // so the highlight can work sentence-by-sentence.
     function sentenceFinalize() {
       if (!curAText.trim()) return;
 
-      // Split on . ! ? followed by whitespace — keep punctuation with the sentence
-      const raw   = curAText.replace(/([.!?])\s+/g, '$1\n').split('\n');
+      // Normalize ellipsis and split on . ! ? (with optional trailing space or EOL)
+      let text = curAText.replace(/…/g, '.');
+      const raw = text.replace(/([.!?]+)(?:\s+|$)/g, '$1\n').split('\n');
       const parts = raw.map(s => s.trim()).filter(s => s.length > 2);
       if (!parts.length) return;
 
@@ -655,51 +736,53 @@
 
     function sentenceApplyHighlight() {
       sentences.forEach((s, i) => {
-        s.el.className = i === sentencePos ? 'sentence active' : 'sentence';
+        if (i === sentencePos) {
+          // Hybrid highlight: outline + background fill (no CSS class needed)
+          s.el.style.outline = '1px solid var(--accent-dim)';
+          s.el.style.outlineOffset = '1px';
+          s.el.style.padding = '1px 3px';
+          s.el.style.borderRadius = '3px';
+          s.el.style.background = 'var(--accent-faint)';
+          s.el.style.transition = 'background 0.15s';
+        } else {
+          s.el.style.outline = 'none';
+          s.el.style.outlineOffset = '0';
+          s.el.style.padding = '0';
+          s.el.style.borderRadius = '0';
+          s.el.style.background = 'none';
+        }
       });
-      if (sentences[sentencePos]) {
-        sentences[sentencePos].el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-      }
     }
 
-    // Tail-anchor search at sentence level.
-    // Takes the last 3 spoken words and finds which sentence in the answer
-    // contains that exact sequence — then highlights that whole sentence.
-    //
-    // A 3-word phrase almost never spans two different sentences, so this is
-    // both precise and fast. Falls back to 2-word and 1-word anchors if needed.
+    // Fuzzy-match with normalization: handle stemming, fillers, ASR errors.
+    // Matches the last few spoken words (normalized) against sentences.
     function sentenceMatchSpoken(spokenText) {
       if (!sentences.length) return;
 
-      const spoken = toWords(spokenText);
-      if (!spoken.length) return;
+      const spokenNorm = normalize(spokenText);
+      if (!spokenNorm.length) return;
 
-      const maxAnchor = Math.min(3, spoken.length);
+      // Search from 1 sentence before current (allows small backward correction)
+      const from = Math.max(0, sentencePos - 1);
 
-      for (let anchorLen = maxAnchor; anchorLen >= 1; anchorLen--) {
-        const tail = spoken.slice(-anchorLen);   // last N spoken words as anchor
+      for (let i = from; i < sentences.length; i++) {
+        // Normalize sentence words on-the-fly for matching
+        const sentNorm = sentences[i].words.map(w => {
+          if (w.endsWith('ing') && w.length > 3) return w.slice(0, -3);
+          if (w.endsWith('ed') && w.length > 2) return w.slice(0, -2);
+          if (w.endsWith('ies') && w.length > 3) return w.slice(0, -3) + 'i';
+          if (w.endsWith('s') && w.length > 2 && w !== 'is') return w.slice(0, -1);
+          if (w.endsWith('ly') && w.length > 2) return w.slice(0, -2);
+          return w;
+        });
 
-        // Search from 1 sentence before current (allows small backward correction)
-        const from = Math.max(0, sentencePos - 1);
-
-        for (let i = from; i < sentences.length; i++) {
-          const sw = sentences[i].words;
-          if (sw.length < anchorLen) continue;
-
-          // Check if tail appears as consecutive words anywhere in this sentence
-          for (let j = 0; j <= sw.length - anchorLen; j++) {
-            let hit = true;
-            for (let k = 0; k < anchorLen; k++) {
-              if (sw[j + k] !== tail[k]) { hit = false; break; }
-            }
-            if (hit) {
-              if (i !== sentencePos) {
-                sentencePos = i;
-                sentenceApplyHighlight();
-              }
-              return;   // longest match found — stop
-            }
+        const matchIdx = fuzzyMatch(sentNorm, spokenNorm);
+        if (matchIdx >= 0) {
+          if (i !== sentencePos) {
+            sentencePos = i;
+            sentenceApplyHighlight();
           }
+          return;
         }
       }
     }
@@ -833,7 +916,7 @@
     // ── Helpers ────────────────────────────────────────────
 
     function archiveAndReset() {
-      if (!curQText && !curAText) return;
+      if (!curQText && !curAText && !curYouText) return;
 
       const pair = document.createElement('div');
       pair.className = 'qa-pair';
@@ -917,6 +1000,10 @@
             curQ.textContent = msg.text;
             break;
           }
+          case 'question_type': {
+            currentQType = msg.question_type;
+            break;
+          }
           case 'answer_thinking': {
             curA.innerHTML = '<span class="thinking">Thinking…</span>';
             answerSpan = null;
@@ -931,7 +1018,6 @@
             // Plain text during streaming — sentence spans built on answer_done
             curAText += msg.text;
             curA.appendChild(document.createTextNode(msg.text));
-            mainEl.scrollTop = 0;
             break;
           }
           case 'answer_done': {
@@ -942,14 +1028,14 @@
           }
           case 'mic_transcript': {
             youRow.style.display = 'flex';
-            curYou.textContent = msg.text;
+            curYou.textContent = curYouText ? curYouText + ' ' + msg.text : msg.text;
             sentenceMatchSpoken(msg.text);
             break;
           }
           case 'user_speech': {
-            curYouText = msg.text;
+            curYouText = curYouText ? curYouText + ' ' + msg.text : msg.text;
             youRow.style.display = 'flex';
-            curYou.textContent = msg.text;
+            curYou.textContent = curYouText;
             sentenceMatchSpoken(msg.text);
             break;
           }
@@ -988,7 +1074,13 @@
             break;
           }
           case 'deepgram_status': {
-            deepgramErr.classList.toggle('on', !msg.connected);
+            dgLoopbackOk = msg.connected;
+            updateDeepgramBanner();
+            break;
+          }
+          case 'mic_deepgram_status': {
+            dgMicOk = msg.connected;
+            updateDeepgramBanner();
             break;
           }
           case 'question_type': {

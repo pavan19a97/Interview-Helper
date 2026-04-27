@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 _DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY")
+if not _DEEPGRAM_API_KEY:
+    print("[audio_engine] ERROR: DEEPGRAM_API_KEY is not set in .env — transcription will fail", flush=True)
 _CHUNK = 2048
 
 # Proactively reconnect after this many seconds to avoid Deepgram's ~10-min session limit
@@ -20,6 +22,17 @@ _MAX_CONN_SECS = 480  # 8 minutes
 from core.transcript_postprocess import get_dg_keyterms_qs, postprocess_transcript
 
 print("[audio_engine] Initializing...", flush=True)
+
+# Module-level flags so main.py can signal both engines to clear their buffers
+_clear_loopback_buffer = False
+_clear_mic_buffer = False
+
+
+def clear_transcript_buffers():
+    """Called by main.py on mute to flush any in-flight partial transcript."""
+    global _clear_loopback_buffer, _clear_mic_buffer
+    _clear_loopback_buffer = True
+    _clear_mic_buffer = True
 
 
 def _find_mic_device(pa: pyaudio.PyAudio):
@@ -77,12 +90,15 @@ async def run() -> None:
         return
 
     audio_queue: sync_queue.Queue = sync_queue.Queue(maxsize=200)
+    _drop_count = [0]
 
     def _audio_callback(in_data, frame_count, time_info, status):
         try:
             audio_queue.put_nowait(in_data)
         except sync_queue.Full:
-            pass
+            _drop_count[0] += 1
+            if _drop_count[0] % 50 == 1:
+                print(f"[audio_engine] ! Audio queue full — {_drop_count[0]} chunks dropped", flush=True)
         return (None, pyaudio.paContinue)
 
     try:
@@ -124,7 +140,12 @@ async def run() -> None:
     transcript_buffer = []
 
     async def receive_results(ws, active_uend):
+        global _clear_loopback_buffer
         async for message in ws:
+            if _clear_loopback_buffer:
+                transcript_buffer.clear()
+                _clear_loopback_buffer = False
+
             try:
                 result = json.loads(message)
             except json.JSONDecodeError:
@@ -142,19 +163,24 @@ async def run() -> None:
                 full_text = " ".join(transcript_buffer).strip()
                 transcript_buffer.clear()
                 full_text = postprocess_transcript(full_text)
-                if not _main.current_muted and full_text:
+                if not _main.settings.muted and full_text:
                     print(f"[audio_engine] utterance: {full_text}", flush=True)
                     broadcast({"type": "transcript", "text": full_text})
-                    await stream_answer(full_text, _main.current_engine)
-                if _main.current_utterance_end_ms != active_uend:
+                    # Engine is captured at task-creation time. If the user toggles
+                    # engine mid-stream the in-flight task finishes on the OLD engine;
+                    # the change takes effect on the next utterance. Intentional —
+                    # cancelling mid-stream would lose a partial answer.
+                    asyncio.create_task(stream_answer(full_text, _main.settings.engine))
+                if _main.settings.utterance_end_ms != active_uend:
                     print(f"[audio_engine] utterance_end_ms changed — reconnecting", flush=True)
+                    _working = None  # force fresh URL build with new utterance_end_ms
                     raise Exception("utterance_end_ms changed")
                 continue
 
             if msg_type != "Results":
                 continue
 
-            if _main.current_muted:
+            if _main.settings.muted:
                 continue
 
             channel = result.get("channel", {})
@@ -171,14 +197,14 @@ async def run() -> None:
             else:
                 broadcast({"type": "transcript", "text": " ".join(transcript_buffer + [text])})
 
-        # async for exited — Deepgram closed the connection without raising
-        raise Exception("[audio_engine] Deepgram closed connection (server-side)")
+        # async for exited — Deepgram closed connection server-side; trigger reconnect
+        raise Exception("server closed connection")
 
     _base = "wss://api.deepgram.com/v1/listen"
     _working: tuple | None = None
 
     def _build_attempts(sr, ch):
-        uend = _main.current_utterance_end_ms
+        uend = _main.settings.utterance_end_ms
         kw = get_dg_keyterms_qs()
         params = (
             f"model=nova-3&smart_format=true&interim_results=true"
@@ -198,7 +224,7 @@ async def run() -> None:
 
     while True:
         try:
-            if _working and _working[2] == _main.current_utterance_end_ms:
+            if _working and _working[2] == _main.settings.utterance_end_ms:
                 attempts = [("reconnect", _working[0], _working[1])]
             else:
                 _working = None
@@ -211,7 +237,7 @@ async def run() -> None:
                 try:
                     print(f"[audio_engine] Attempting connection ({desc})...", flush=True)
                     async with websockets.connect(conn_url, additional_headers=hdrs) as ws:
-                        active_uend = _main.current_utterance_end_ms
+                        active_uend = _main.settings.utterance_end_ms
                         _working = (conn_url, hdrs, active_uend)
                         transcript_buffer.clear()
                         deadline = time.monotonic() + _MAX_CONN_SECS
@@ -297,7 +323,7 @@ async def run_mic() -> None:
     _working: tuple | None = None
 
     def _build_attempts(sr, ch):
-        uend = _main.current_utterance_end_ms
+        uend = _main.settings.utterance_end_ms
         kw = get_dg_keyterms_qs()
         params = (
             f"model=nova-3&smart_format=true&interim_results=true"
@@ -329,8 +355,13 @@ async def run_mic() -> None:
     transcript_buffer = []
 
     async def receive_results(ws, active_uend):
+        global _clear_mic_buffer
         ctx = get_context()
         async for message in ws:
+            if _clear_mic_buffer:
+                transcript_buffer.clear()
+                _clear_mic_buffer = False
+
             try:
                 result = json.loads(message)
             except json.JSONDecodeError:
@@ -351,7 +382,8 @@ async def run_mic() -> None:
                     print(f"[mic_engine] user said: {full_text}", flush=True)
                     ctx.add_user_speech(full_text)
                     broadcast({"type": "user_speech", "text": full_text})
-                if _main.current_utterance_end_ms != active_uend:
+                if _main.settings.utterance_end_ms != active_uend:
+                    _working = None  # force fresh URL build with new utterance_end_ms
                     raise Exception("utterance_end_ms changed")
                 continue
 
@@ -372,12 +404,12 @@ async def run_mic() -> None:
             else:
                 broadcast({"type": "mic_transcript", "text": " ".join(transcript_buffer + [text])})
 
-        # async for exited — server closed the connection
-        raise Exception("[mic_engine] Deepgram closed connection (server-side)")
+        # async for exited — Deepgram closed connection server-side; trigger reconnect
+        raise Exception("server closed connection")
 
     while True:
         try:
-            if _working and _working[2] == _main.current_utterance_end_ms:
+            if _working and _working[2] == _main.settings.utterance_end_ms:
                 attempts = [("reconnect", _working[0], _working[1])]
             else:
                 _working = None
@@ -390,11 +422,12 @@ async def run_mic() -> None:
                 try:
                     print(f"[mic_engine] Connecting ({desc})...", flush=True)
                     async with websockets.connect(conn_url, additional_headers=hdrs) as ws:
-                        active_uend = _main.current_utterance_end_ms
+                        active_uend = _main.settings.utterance_end_ms
                         _working = (conn_url, hdrs, active_uend)
                         transcript_buffer.clear()
                         deadline = time.monotonic() + _MAX_CONN_SECS
                         print(f"[mic_engine] OK Connected to Deepgram ({desc})", flush=True)
+                        broadcast({"type": "mic_deepgram_status", "connected": True})
                         await asyncio.gather(
                             send_audio(ws, deadline),
                             receive_results(ws, active_uend),
@@ -404,11 +437,13 @@ async def run_mic() -> None:
                 except Exception as exc:
                     print(f"[mic_engine] Connection ended ({desc}): {exc}", flush=True)
                     if _working and _working[0] == conn_url:
+                        broadcast({"type": "mic_deepgram_status", "connected": False})
                         break
                     continue
             else:
                 _working = None
                 print("[mic_engine] ! All mic connection attempts failed — retrying in 3s", flush=True)
+                broadcast({"type": "mic_deepgram_status", "connected": False})
                 await asyncio.sleep(3)
 
         except asyncio.CancelledError:

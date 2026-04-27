@@ -42,27 +42,31 @@ class QAPair:
 
 class ConversationContext:
     """Manages conversation history and context"""
-    
+
     def __init__(self, max_history: int = 5):
         self.max_history = max_history
         self.history: List[QAPair] = []
         self.current_question: Optional[str] = None
-    
-    def add_question(self, question: str) -> None:
-        """Record a new question from the interviewer"""
+
+    def add_question(self, question: str) -> 'QAPair':
+        """Record a new question. Returns the QAPair so the caller can write
+        the answer into it later without risking overlap with a concurrent question."""
         self.current_question = question
-    
-    def add_answer(self, answer: str) -> None:
-        """Record the AI's answer to the current question"""
-        if self.current_question:
-            qa_pair = QAPair(
-                question=self.current_question,
-                answer=answer,
-                question_type=self._analyze_question_type()
-            )
-            self.history.append(qa_pair)
-            if len(self.history) > self.max_history:
-                self.history = self.history[-self.max_history:]
+        pair = QAPair(
+            question=question,
+            answer="",
+            question_type=self._analyze_question_type()
+        )
+        self.history.append(pair)
+        if len(self.history) > self.max_history:
+            self.history = self.history[-self.max_history:]
+        return pair
+
+    def add_answer(self, pair: 'QAPair', answer: str) -> None:
+        """Write the AI's answer into the specific pair returned by add_question.
+        Safe to call concurrently for different pairs."""
+        pair.answer = answer
+        if self.current_question == pair.question:
             self.current_question = None
 
     def add_user_speech(self, text: str) -> None:

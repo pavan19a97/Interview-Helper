@@ -6,6 +6,9 @@ Tracks Q&A history, analyzes question relationships, and provides context for LL
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
+import datetime
+import json
+import os
 import re
 
 
@@ -150,6 +153,28 @@ class ConversationContext:
         """Clear all conversation history"""
         self.history.clear()
         self.current_question = None
+
+    def save_and_clear(self) -> str:
+        """Serialize current history to data/sessions/, then clear. Returns saved filename."""
+        sessions_dir = os.path.join(
+            os.path.dirname(__file__), "..", "data", "sessions"
+        )
+        os.makedirs(sessions_dir, exist_ok=True)
+
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"session_{timestamp}.json"
+        filepath = os.path.join(sessions_dir, filename)
+
+        payload = {
+            "saved_at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "exchanges": [qa.to_dict() for qa in self.history],
+        }
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+
+        self.clear()
+        print(f"[context] Saved {len(payload['exchanges'])} exchanges to {filename}", flush=True)
+        return filename
     
     def get_summary(self) -> dict:
         """Get a summary of the conversation"""
@@ -176,3 +201,8 @@ def get_context() -> ConversationContext:
 def reset_context() -> None:
     """Reset the global conversation context"""
     _context.clear()
+
+
+def save_and_clear_context() -> str:
+    """Save current session to disk and clear. Returns saved filename."""
+    return _context.save_and_clear()

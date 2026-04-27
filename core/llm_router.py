@@ -97,8 +97,8 @@ async def stream_answer(transcript: str, engine: str) -> None:
     print(f"[llm_router] Question type: {q_type.value}", flush=True)
     broadcast({"type": "question_type", "question_type": q_type.value})
     
-    # Build messages with context
-    context_str = ctx.get_recent_context(count=3)
+    # Build messages with context — last 2 exchanges keeps prompts lean
+    context_str = ctx.get_recent_context(count=2)
     
     if context_str:
         user_content = f"""CONVERSATION CONTEXT:

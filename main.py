@@ -115,6 +115,11 @@ async def ws_ui(websocket: WebSocket):
                 from core.context_manager import reset_context
                 reset_context()
                 print("[main] Context reset", flush=True)
+            elif msg.get("type") == "save_context":
+                from core.context_manager import save_and_clear_context
+                filename = save_and_clear_context()
+                print(f"[main] Context saved: {filename}", flush=True)
+                await _broadcast_impl(json.dumps({"type": "context_saved", "filename": filename}))
             elif msg.get("type") == "summarize":
                 from core.llm_router import summarize_session
                 asyncio.ensure_future(summarize_session(current_engine))

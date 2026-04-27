@@ -553,8 +553,10 @@
       <div id="action-bar">
         <button id="btn-uploads"   class="hist-action-btn" title="Manage context documents">📎 DOCS</button>
         <button id="btn-summarize" class="hist-action-btn" title="Generate end-of-interview debrief">SUMMARIZE</button>
+        <button id="btn-save"      class="hist-action-btn" title="Save session to file and clear context">SAVE</button>
         <button id="btn-clear"     class="hist-action-btn" title="Clear history and reset context">CLEAR</button>
       </div>
+      <div id="save-toast" style="display:none; text-align:center; font-size:10px; color:var(--accent); padding:3px 0; letter-spacing:0.06em;"></div>
 
       <!-- History header — label only, shown when history exists -->
       <div id="history-hdr">
@@ -961,6 +963,24 @@
             sentenceReset();
             break;
           }
+          case 'context_saved': {
+            // After save, wipe the UI history too (server already cleared in-memory context)
+            histDiv.innerHTML = '';
+            histHdr.classList.remove('on');
+            sentenceReset();
+            curQText = ''; curAText = ''; curYouText = '';
+            answerSpan = null; answerDone = false; currentQType = 'new_topic';
+            curQ.innerHTML = '<span class="placeholder">Listening…</span>';
+            curA.innerHTML = '<span class="placeholder">Answer streams here…</span>';
+            curYou.textContent = '';
+            youRow.style.display = 'none';
+            // Show brief confirmation toast
+            const toast = document.getElementById('save-toast');
+            toast.textContent = `Saved ${msg.filename}`;
+            toast.style.display = 'block';
+            setTimeout(() => { toast.style.display = 'none'; }, 3000);
+            break;
+          }
           case 'uploads_changed': {
             if (document.getElementById('uploads-modal').classList.contains('open')) {
               refreshUploads();
@@ -998,6 +1018,11 @@
     document.getElementById('btn-summarize').addEventListener('click', () => {
       if (ws && ws.readyState === WebSocket.OPEN)
         ws.send(JSON.stringify({ type: 'summarize' }));
+    });
+
+    document.getElementById('btn-save').addEventListener('click', () => {
+      if (ws && ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ type: 'save_context' }));
     });
 
     document.getElementById('btn-clear').addEventListener('click', () => {

@@ -9,6 +9,7 @@
 [![Deepgram](https://img.shields.io/badge/Deepgram-nova--3-13EF93?logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=)](https://deepgram.com/)
 [![Groq](https://img.shields.io/badge/Groq-LLaMA%203.1-F55036)](https://groq.com/)
 [![Claude](https://img.shields.io/badge/Anthropic-Claude%20Haiku-D97757?logo=anthropic&logoColor=white)](https://www.anthropic.com/)
+[![Version](https://img.shields.io/badge/version-1.4.0-brightgreen)](https://github.com/pavan19a97/Interview-Helper/releases/tag/v1.4.0)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [**Features**](#-features) • [**Architecture**](#-architecture) • [**Quick Start**](#-quick-start) • [**Configuration**](#-configuration) • [**Tech Stack**](#-tech-stack)
@@ -86,13 +87,43 @@
 
 ### 📋 **Session Tools**
 - **SUMMARIZE** — end-of-interview debrief (themes, gaps, prep tips)
+- **SAVE** — persists full session to `data/sessions/*.json` and clears context
 - **CLEAR** — wipes history and resets LLM conversation context
+- **📎 DOCS** — upload .txt / .md / .json / .pdf / .docx files as live context
 - Persistent settings via `localStorage` (theme, engine, opacity, pause)
 
 ### 🔄 **Engine Switching**
 - ⚡ **Groq** — `llama-3.1-8b-instant` (fastest)
 - 🧠 **Claude** — `claude-haiku-4-5` (highest quality)
 - Switch mid-session, no restart
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### 🎯 **Sentence Karaoke Highlight**
+- Answer text split into sentences after streaming completes
+- Active sentence highlighted with green outline + background
+- Matched word inside bolded + underlined for pinpoint accuracy
+- Fuzzy matching with Levenshtein distance (tolerates ASR errors)
+- Stem + filler removal (`um`, `uh`, `like`…) before matching
+- Contraction expansion (`don't` → `do not`) for better recall
+- Distance penalty prevents multi-sentence jumps on weak evidence
+- Look-ahead auto-advance: pre-jumps to next sentence when within last ~5 words
+- Active sentence always scrolls to **center** of the answer view
+
+</td>
+<td width="50%" valign="top">
+
+### 🔒 **Reliability & Stealth**
+- Thread-safe `Settings` class (`RLock`) — no race conditions under load
+- Fire-and-forget LLM tasks keep Deepgram receive loop unblocked
+- Dual Deepgram health banner — tracks loopback + mic independently
+- Audio queue drop counter logs upstream lag visibility
+- Mute clears in-flight transcript buffer (no stale partials after unmute)
+- `You` row clamped to ~2 lines, auto-scrolls to show latest speech
+- Question-type tagging in history (`↳ Follow-up`, `↻ Rephrased`, `? Clarify`)
 
 </td>
 </tr>
@@ -214,7 +245,9 @@ The overlay appears in the top-right of your screen, frameless and on top.
 | **─** | Minimize |
 | **✕** | Close |
 | **SUMMARIZE** | Generate end-of-session debrief |
+| **SAVE** | Save session to `data/sessions/*.json` and clear context |
 | **CLEAR** | Reset history + LLM conversation context |
+| **📎 DOCS** | Upload context documents (PDF, DOCX, TXT, MD, JSON) |
 | **Drag (header)** | Move window |
 | **Resize grip** | Bottom-right corner |
 
@@ -274,7 +307,10 @@ When the interviewer's utterance ends, `ConversationContext._analyze_question_ty
 ### 4️⃣ LLM streaming
 The transcript + last 3 Q&A pairs of context get fed to the chosen engine. Tokens stream back over the WebSocket and paint the AI row character-by-character.
 
-### 5️⃣ Session debrief
+### 5️⃣ Sentence karaoke highlight
+Once the answer finishes streaming, it's split into sentence spans. As you speak your reply, the mic transcript is normalized (stems, filler removal, contraction expansion) and fuzzy-matched against each sentence using sliding-window Jaccard similarity with Levenshtein word tolerance. The matching sentence gets a green outline + background; the matched word gets bold + underline. A distance penalty prevents jumps of 2+ sentences unless confidence is high. When you're within ~5 words of finishing a sentence, the highlight pre-advances to the next one.
+
+### 6️⃣ Session debrief
 Hit **SUMMARIZE** at the end — the entire session (questions, AI suggestions, what you actually said) goes to the LLM and you get a 4-section debrief: themes, strong moments, gaps, and prep tips for next time.
 
 ---
